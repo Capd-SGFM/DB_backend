@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y libpq-dev gcc postgresql-client && rm -rf /var/lib/apt/lists/*
 
-COPY ./db_update_backend/ .
+COPY ./DB_backend/ .
 RUN pip install --no-cache-dir -r requirements.txt
 
 
