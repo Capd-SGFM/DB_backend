@@ -35,11 +35,11 @@ OHLCV_MODELS = {
     # "5m": Ohlcv5m,
     # "15m": Ohlcv15m,
     # "30m": Ohlcv30m,
-    # "1h": Ohlcv1h,
+    "1h": Ohlcv1h,
     "4h": Ohlcv4h,
     "1d": Ohlcv1d,
-    # "1w": Ohlcv1w,
-    # "1M": Ohlcv1M,
+    "1w": Ohlcv1w,
+    "1M": Ohlcv1M,
 }
 
 # 모든 보조지표 모델 딕셔너리
@@ -49,9 +49,9 @@ INDICATOR_MODELS = {
     # "5m": Indicator5m,
     # "15m": Indicator15m,
     # "30m": Indicator30m,
-    # "1h": Indicator1h,
+    "1h": Indicator1h,
     "4h": Indicator4h,
     "1d": Indicator1d,
-    # "1w": Indicator1w,
-    # "1M": Indicator1M,
+    "1w": Indicator1w,
+    "1M": Indicator1M,
 }
