@@ -3,6 +3,7 @@ from celery import shared_task, group
 from loguru import logger
 import httpx
 
+from sqlalchemy import select
 from db_module.connect_sqlalchemy_engine import SyncSessionLocal
 from models import CryptoInfo, OHLCV_MODELS
 from models.pipeline_state import (
@@ -13,31 +14,93 @@ from models.pipeline_state import (
 from .rest_api_task import backfill_symbol_interval
 
 
+# ===========================================================
+# DB 기반 WS frontier 계산
+# ===========================================================
+def get_ws_frontier_from_db():
+    """
+    WebSocket으로 들어온 is_ended=False 중 가장 오래된 timestamp를 WS frontier로 사용.
+    없다면 해당 interval의 is_ended=False 가 생길 때까지 대기하도록 None 반환.
+    """
+    frontier_candidates = []
+
+    with SyncSessionLocal() as session:
+        for interval, Model in OHLCV_MODELS.items():
+            row = session.execute(
+                select(Model.timestamp)
+                .where(Model.is_ended == False)
+                .order_by(Model.timestamp.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if row:
+                frontier_candidates.append(row)
+
+    if not frontier_candidates:
+        return None  # 아직 websocket 데이터가 없음 → 대기해야 함
+
+    # 가장 오래된 is_ended=False timestamp
+    oldest = min(frontier_candidates)
+    return int(oldest.timestamp() * 1000)
+
+
+# ===========================================================
+# REST 유지보수 엔진 (최종 패치 완료)
+# ===========================================================
 @shared_task(name="pipeline.run_maintenance_cycle")
 def run_maintenance_cycle():
     """
-    일정 주기로 호출 (Celery beat).
-    - pipeline이 active가 아니면 즉시 종료
-    - active면: Binance serverTime 기준으로 WebSocket 이전 구간을 REST로 틈 메우기
-    - 에러 발생 시 pipeline_state(id=4: REST 유지보수)의 last_error에 기록
+    REST 유지보수 엔진:
+    1) 유지보수할 데이터가(is_ended=False) 없으면 즉시 SUCCESS 반환
+    2) 유지보수 대상이 있으면 해당 대상만 REST 백필 실행
     """
-    # 전체 파이프라인 OFF면 그냥 종료
     if not is_pipeline_active():
-        logger.info("[Maintenance] pipeline inactive -> skip")
-        return
+        logger.info("[REST] Pipeline OFF -> Skip")
+        return {"status": "SKIP"}
 
     try:
-        # 1) Binance serverTime 가져옴
-        with httpx.Client(timeout=10.0) as client:
-            server_time_res = client.get("https://fapi.binance.com/fapi/v1/time")
-            server_time_res.raise_for_status()
-            server_time_ms = server_time_res.json()["serverTime"]
+        # ---------------------------------------------------
+        # 1) 유지보수할 데이터 유무 확인
+        # ---------------------------------------------------
+        logger.info("[REST] 유지보수 대상 스캔 시작")
 
-        # WebSocket이 약간 앞에서 수집 중이라고 가정하고,
-        # 딱 server_time_ms 이전까지만 REST 유지보수
-        ws_cutoff_ms = server_time_ms
+        maintenance_targets = []
 
-        # 2) 모든 심볼/interval 조회
+        with SyncSessionLocal() as session:
+
+            for interval, Model in OHLCV_MODELS.items():
+                row = session.execute(
+                    select(Model)
+                    .where(Model.is_ended == False)
+                    .order_by(Model.timestamp.asc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if row:
+                    maintenance_targets.append((row.symbol, interval))
+
+        # ---------------------------------------------------
+        # 1-1) 유지보수 대상 없음 → 즉시 SUCCESS
+        # ---------------------------------------------------
+        if not maintenance_targets:
+            logger.info("[REST] 유지보수 대상 없음 → 즉시 SUCCESS")
+            return {"status": "SUCCESS", "updated": 0}
+
+        logger.info(f"[REST] 유지보수 대상 발견: {len(maintenance_targets)}개")
+
+        # ---------------------------------------------------
+        # 2) DB 기반 WS frontier 계산
+        # ---------------------------------------------------
+        ws_frontier_ms = get_ws_frontier_from_db()
+        if ws_frontier_ms is None:
+            logger.info("[REST] is_ended=False 캔들이 아직 없음 → WS 데이터 생성 대기")
+            return {"status": "WAITING_WS"}
+
+        logger.info(f"[REST] WS frontier timestamp(ms) = {ws_frontier_ms}")
+
+        # ---------------------------------------------------
+        # 3) 실제 유지보수 수행 (필요한 구간만 REST backfill)
+        # ---------------------------------------------------
+        jobs = []
+
         with SyncSessionLocal() as session:
             symbols = (
                 session.query(CryptoInfo.symbol, CryptoInfo.pair)
@@ -45,39 +108,34 @@ def run_maintenance_cycle():
                 .all()
             )
 
-        intervals = list(OHLCV_MODELS.keys())
+        symbol_pair_map = {sym: pair for sym, pair in symbols}
 
-        # 3) 각 (symbol, interval)에 대해 짧은 backfill 실행
-        jobs = []
-        for sym, pair in symbols:
-            for interval in intervals:
-                jobs.append(
-                    backfill_symbol_interval.s(
-                        symbol=sym,
-                        pair=pair,
-                        interval=interval,
-                        ws_frontier_ms=ws_cutoff_ms,  # ← 시그니처에 맞게 수정
-                    )
+        for sym, interval in maintenance_targets:
+            pair = symbol_pair_map.get(sym)
+            if not pair:
+                continue
+
+            jobs.append(
+                backfill_symbol_interval.s(
+                    symbol=sym,
+                    pair=pair,
+                    interval=interval,
+                    ws_frontier_ms=ws_frontier_ms,
+                    run_id=None,
                 )
+            )
 
         if not jobs:
-            logger.info("[Maintenance] no symbols/intervals to maintain.")
-            return
+            logger.info("[REST] 실행할 작업 없음 → SUCCESS")
+            return {"status": "SUCCESS", "updated": 0}
 
-        logger.info(
-            f"[Maintenance] start maintenance cycle: jobs={len(jobs)}, ws_cutoff_ms={ws_cutoff_ms}"
-        )
+        logger.info(f"[REST] 유지보수 실행: jobs={len(jobs)}")
+
         group(jobs).apply_async()
 
+        return {"status": "SUCCESS", "updated": len(jobs)}
+
     except Exception as e:
-        logger.error(f"[Maintenance] run_maintenance_cycle failed: {e}")
-        # REST 유지보수 엔진 에러 로그 기록 (id=4)
-        try:
-            set_component_error(
-                PipelineComponent.REST_MAINTENANCE,
-                f"Maintenance cycle error: {type(e).__name__}: {e}",
-            )
-        except Exception:
-            logger.exception("[Maintenance] failed to save last_error")
-        # Celery 쪽에는 에러로 남겨 두기
-        raise
+        logger.exception(e)
+        set_component_error(PipelineComponent.REST_MAINTENANCE, f"REST error: {e}")
+        return {"status": "FAIL", "error": str(e)}
