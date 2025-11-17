@@ -16,6 +16,11 @@ from sqlalchemy import select, desc
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
 
+# ===============================
+#   공통 Response 모델
+# ===============================
+
+
 class PipelineToggleResponse(BaseModel):
     message: str
     is_active: bool
@@ -24,7 +29,7 @@ class PipelineToggleResponse(BaseModel):
 class EngineStatusModel(BaseModel):
     id: int
     is_active: bool
-    status: str  # "WAIT" | "PROGRESS" | "FAIL" | "UNKNOWN"
+    status: str  # WAIT | PROGRESS | SUCCESS | FAIL | UNKNOWN
     last_error: str | None = None
     updated_at: str | None = None
 
@@ -37,32 +42,20 @@ class PipelineStatusResponse(BaseModel):
     indicator: EngineStatusModel
 
 
-def _map_engine_status(
-    is_pipeline_on: bool,
-    comp: dict,
-) -> EngineStatusModel:
-    """
-    get_all_pipeline_states() 에서 내려준 dict(comp)을
-    프론트에서 쓰기 좋은 EngineStatusModel로 변환.
+# ==================================================
+#   기존 엔진 상태 매핑 (WebSocket / REST / Indicator)
+# ==================================================
 
-    comp 예시:
-      {
-        "id": 2,
-        "is_active": True,
-        "updated_at": "2025-11-17T00:00:00+00:00",
-        "last_error": "some error" or None
-      }
-    """
+
+def _map_engine_status(is_pipeline_on: bool, comp: dict) -> EngineStatusModel:
     comp_id = int(comp.get("id"))
     is_active = bool(comp.get("is_active", False))
     last_error = comp.get("last_error")
     updated_at = comp.get("updated_at")
 
-    # 기본값은 WAIT
     status = "WAIT"
 
     if not is_pipeline_on:
-        # 전체 파이프라인 OFF면 전부 WAIT로 처리
         status = "WAIT"
     else:
         if last_error:
@@ -70,7 +63,6 @@ def _map_engine_status(
         elif is_active:
             status = "PROGRESS"
         else:
-            # 파이프라인은 ON인데, 이 컴포넌트는 비활성
             status = "WAIT"
 
     return EngineStatusModel(
@@ -82,35 +74,98 @@ def _map_engine_status(
     )
 
 
+# ==================================================
+#   ☆ Backfill 엔진 전용 상태 매핑
+# ==================================================
+
+
+def _map_backfill_status(is_pipeline_on: bool, comp: dict) -> EngineStatusModel:
+    comp_id = int(comp.get("id"))
+    is_active = bool(comp.get("is_active", False))
+    last_error = comp.get("last_error")
+    updated_at = comp.get("updated_at")
+
+    # pipeline OFF → 무조건 WAIT
+    if not is_pipeline_on:
+        return EngineStatusModel(
+            id=comp_id,
+            is_active=False,
+            status="WAIT",
+            last_error=last_error,
+            updated_at=updated_at,
+        )
+
+    # error 있으면 FAIL
+    if last_error:
+        return EngineStatusModel(
+            id=comp_id,
+            is_active=False,
+            status="FAIL",
+            last_error=last_error,
+            updated_at=updated_at,
+        )
+
+    # 현재 실행중이면 PROGRESS
+    if is_active:
+        return EngineStatusModel(
+            id=comp_id,
+            is_active=True,
+            status="PROGRESS",
+            last_error=last_error,
+            updated_at=updated_at,
+        )
+
+    # 여기부터가 핵심
+    # ================================
+    #   BackfillProgress 전체 상태 확인
+    # ================================
+    with SyncSessionLocal() as session:
+        rows = session.execute(select(BackfillProgress.state)).scalars().all()
+
+    if not rows:
+        final_status = "WAIT"
+    elif any(s in ("FAIL", "FAILURE") for s in rows):
+        final_status = "FAIL"
+    elif all(s in ("COMPLETE", "SUCCESS") for s in rows):
+        final_status = "SUCCESS"
+    elif any(s in ("PROGRESS", "STARTED") for s in rows):
+        final_status = "PROGRESS"
+    else:
+        final_status = "WAIT"
+
+    return EngineStatusModel(
+        id=comp_id,
+        is_active=False,
+        status=final_status,
+        last_error=last_error,
+        updated_at=updated_at,
+    )
+
+
+# ==================================================
+#   파이프라인 ON
+# ==================================================
+
+
 @router.post("/on", response_model=PipelineToggleResponse)
 async def activate_pipeline():
-    """
-    전체 파이프라인 ON.
-    - trading_data.pipeline_state(id=1).is_active = TRUE
-    - 기존 backfill_progress 기록은 모두 초기화
-    - Celery 에 pipeline.start_pipeline 태스크 enqueue
-    """
     if is_pipeline_active():
         return PipelineToggleResponse(
             message="이미 파이프라인이 ON 상태입니다.",
             is_active=True,
         )
 
-    # ✅ 이전 Backfill 진행률 기록을 전부 삭제
+    # 기존 BackfillProgress 모두 초기화
     try:
         reset_backfill_progress()
-        logger.info("[Pipeline] reset backfill_progress table (fresh run).")
+        logger.info("[Pipeline] reset backfill_progress table")
     except Exception:
-        # 진행률 초기화 실패 때문에 파이프라인 자체가 안 켜지는 건 너무 과하니,
-        # 일단 로그만 남기고 이어서 진행
         logger.exception("[Pipeline] failed to reset backfill_progress")
 
-    # 파이프라인 플래그 ON
     set_pipeline_active(True)
 
-    # Celery 에 실제 파이프라인 시작 태스크 enqueue
     start_pipeline.delay()
-    logger.info("[Pipeline] activated (start_pipeline task enqueued)")
+    logger.info("[Pipeline] activated")
 
     return PipelineToggleResponse(
         message="데이터 수집 파이프라인을 활성화했습니다.",
@@ -118,14 +173,13 @@ async def activate_pipeline():
     )
 
 
+# ==================================================
+#   파이프라인 OFF
+# ==================================================
+
+
 @router.post("/off", response_model=PipelineToggleResponse)
 async def deactivate_pipeline():
-    """
-    전체 파이프라인 OFF.
-    - trading_data.pipeline_state(id=1).is_active = FALSE
-    - 하위 컴포넌트(id=2~5) 도 False 로 초기화 (set_pipeline_active 내부에서 처리)
-    - Celery 에 pipeline.stop_pipeline 태스크 enqueue
-    """
     if not is_pipeline_active():
         return PipelineToggleResponse(
             message="이미 파이프라인이 OFF 상태입니다.",
@@ -134,7 +188,8 @@ async def deactivate_pipeline():
 
     set_pipeline_active(False)
     stop_pipeline.delay()
-    logger.info("[Pipeline] deactivated (stop_pipeline task enqueued)")
+
+    logger.info("[Pipeline] deactivated")
 
     return PipelineToggleResponse(
         message="데이터 수집 파이프라인을 비활성화했습니다.",
@@ -142,57 +197,23 @@ async def deactivate_pipeline():
     )
 
 
+# ==================================================
+#   파이프라인 상태 조회 API
+# ==================================================
+
+
 @router.get("/status", response_model=PipelineStatusResponse)
 async def get_pipeline_status():
-    """
-    프론트엔드 Progress UI 용 상태 조회.
-    - get_all_pipeline_states() 에서
-      pipeline / websocket / backfill / rest_maintenance / indicator 상태를 받아서
-      각 컴포넌트별 status + last_error + updated_at까지 내려줌.
-    """
     states = get_all_pipeline_states()
-
     is_on = bool(states.get("pipeline", {}).get("is_active", False))
 
-    ws = states.get(
-        "websocket",
-        {
-            "id": 2,
-            "is_active": False,
-            "updated_at": None,
-            "last_error": None,
-        },
-    )
-    bf = states.get(
-        "backfill",
-        {
-            "id": 3,
-            "is_active": False,
-            "updated_at": None,
-            "last_error": None,
-        },
-    )
-    rm = states.get(
-        "rest_maintenance",
-        {
-            "id": 4,
-            "is_active": False,
-            "updated_at": None,
-            "last_error": None,
-        },
-    )
-    ind = states.get(
-        "indicator",
-        {
-            "id": 5,
-            "is_active": False,
-            "updated_at": None,
-            "last_error": None,
-        },
-    )
+    ws = states.get("websocket", {"id": 2, "is_active": False})
+    bf = states.get("backfill", {"id": 3, "is_active": False})
+    rm = states.get("rest_maintenance", {"id": 4, "is_active": False})
+    ind = states.get("indicator", {"id": 5, "is_active": False})
 
     websocket_status = _map_engine_status(is_on, ws)
-    backfill_status = _map_engine_status(is_on, bf)
+    backfill_status = _map_backfill_status(is_on, bf)  # ★ 변경된 부분
     rest_status = _map_engine_status(is_on, rm)
     indicator_status = _map_engine_status(is_on, ind)
 
@@ -205,21 +226,21 @@ async def get_pipeline_status():
     )
 
 
-# ==============================
-#   Backfill 진행률 조회용 API
-# ==============================
+# ==================================================
+#   Backfill 진행률 조회 API (변경 없음)
+# ==================================================
 
 
 class BackfillIntervalProgress(BaseModel):
     interval: str
-    state: str  # PENDING / PROGRESS / COMPLETE / FAIL / SUCCESS / FAILURE 등
+    state: str
     pct_time: float
     last_updated_iso: str | None
 
 
 class BackfillSymbolProgress(BaseModel):
     symbol: str
-    state: str  # 전체 심볼 상태 (PENDING / PROGRESS / SUCCESS / FAILURE / UNKNOWN)
+    state: str
     intervals: dict[str, BackfillIntervalProgress]
 
 
@@ -230,14 +251,7 @@ class BackfillProgressResponse(BaseModel):
 
 @router.get("/backfill/progress", response_model=BackfillProgressResponse)
 async def get_backfill_progress():
-    """
-    현재 진행 중이거나 가장 최근 실행된 Backfill 엔진의 전체 진행률 조회 API.
-    - 가장 최근 run_id 기준
-    - 각 symbol × interval 별로 BackfillProgress 테이블의 row를 집계해서 반환
-    - 프론트는 이 API만 폴링하면, localStorage 없이도 전체 진행 상황을 볼 수 있음
-    """
     with SyncSessionLocal() as session:
-        # 1) 가장 최근 run_id 찾기 (updated_at 기준)
         q = (
             select(BackfillProgress.run_id)
             .order_by(desc(BackfillProgress.updated_at))
@@ -246,23 +260,20 @@ async def get_backfill_progress():
         latest_run = session.execute(q).scalar_one_or_none()
 
         if not latest_run:
-            # 아직 Backfill 기록이 전혀 없음
             return BackfillProgressResponse(run_id=None, symbols={})
 
         run_id = latest_run
 
-        # 2) 해당 run_id의 전체 row 조회
         q2 = select(BackfillProgress).where(BackfillProgress.run_id == run_id)
         rows = session.execute(q2).scalars().all()
 
-    # 3) symbol → interval → progress 구조로 정리
     result: dict[str, BackfillSymbolProgress] = {}
 
     for row in rows:
         if row.symbol not in result:
             result[row.symbol] = BackfillSymbolProgress(
                 symbol=row.symbol,
-                state="UNKNOWN",  # 일단 UNKNOWN, 나중에 아래에서 재계산
+                state="UNKNOWN",
                 intervals={},
             )
 
@@ -270,13 +281,13 @@ async def get_backfill_progress():
             interval=row.interval,
             state=row.state,
             pct_time=float(row.pct_time or 0.0),
-            # updated_at 기반 ISO 문자열
             last_updated_iso=row.updated_at.isoformat() if row.updated_at else None,
         )
 
-    # 4) 심볼 단위 state 재계산
+    # 심볼 단위 상태 재계산
     for sym_model in result.values():
         states = [iv.state for iv in sym_model.intervals.values()]
+
         if not states:
             sym_model.state = "UNKNOWN"
         elif any(s in ("FAIL", "FAILURE") for s in states):
