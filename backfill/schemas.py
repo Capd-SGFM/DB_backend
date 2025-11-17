@@ -2,10 +2,6 @@ from pydantic import BaseModel
 from typing import List, Optional, Any
 
 
-class BackfillRequest(BaseModel):
-    intervals: List[str]
-
-
 class TaskInfo(BaseModel):
     task_id: str
     symbol: str
