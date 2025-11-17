@@ -1,5 +1,5 @@
 # ================================================================
-#  완전 패치된 BACKFILL 엔진 (무한 대기 0%, 즉시 SUCCESS 반환)
+#  완전 패치된 BACKFILL 엔진 (WS-frontier 자동 계산 + 저장 커밋 보장)
 # ================================================================
 import time
 from datetime import datetime, timezone
@@ -9,7 +9,7 @@ import httpx
 import pandas as pd
 from celery import Task
 from loguru import logger
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, asc
 from sqlalchemy.dialects.postgresql import insert
 
 from db_module.connect_sqlalchemy_engine import SyncSessionLocal
@@ -26,18 +26,43 @@ from . import celery_app
 BINANCE_FAPI_URL = "https://fapi.binance.com/fapi/v1/klines"
 KLINE_LIMIT = 1000
 
+
 INTERVAL_TO_MS = {
-    "1m": 60_000,
-    "3m": 180_000,
-    "5m": 300_000,
-    "15m": 900_000,
-    "30m": 1_800_000,
     "1h": 3_600_000,
     "4h": 14_400_000,
     "1d": 86_400_000,
     "1w": 7 * 86_400_000,
     "1M": 30 * 86_400_000,
 }
+
+
+# ================================================================
+#  DB에서 WS frontier 얻기 (is_ended=False 중 가장 오래된 timestamp)
+# ================================================================
+def detect_ws_frontier_ms(symbol: str, OhlcvModel):
+    """
+    1) DB에 is_ended=False가 있다면 → 가장 오래된 timestamp 사용
+    2) 없다면 → websocket이 데이터를 넣을 때까지 대기
+    """
+    while True:
+        if not is_pipeline_active():
+            return None
+
+        with SyncSessionLocal() as session:
+            earliest = (
+                session.query(OhlcvModel.timestamp)
+                .filter(OhlcvModel.symbol == symbol, OhlcvModel.is_ended == False)
+                .order_by(asc(OhlcvModel.timestamp))
+                .first()
+            )
+
+        if earliest:
+            return int(earliest[0].timestamp() * 1000)
+
+        logger.info(
+            f"[Backfill] WS frontier 대기 중: symbol={symbol} (is_ended=False row 없음)"
+        )
+        time.sleep(1)
 
 
 # ================================================================
@@ -55,7 +80,7 @@ def upsert_backfill_progress(
     if not run_id:
         return
 
-    with SyncSessionLocal() as session, session.begin():
+    with SyncSessionLocal() as session, session.begin():  # 🔥 commit 보장
         stmt = (
             insert(BackfillProgress)
             .values(
@@ -82,26 +107,27 @@ def upsert_backfill_progress(
 
 
 # ================================================================
-#  DB 시작 시각 계산
+#  DB 시작 시각 계산 (is_ended=True 최신 timestamp)
 # ================================================================
-def get_start_time_ms(
-    symbol, interval, OhlcvModel, ws_frontier_ms
-) -> Tuple[Optional[int], bool]:
+def get_start_time_ms(symbol, interval, OhlcvModel, ws_frontier_ms):
     ws_frontier_dt = datetime.fromtimestamp(ws_frontier_ms / 1000, tz=timezone.utc)
 
     with SyncSessionLocal() as session:
-        total_count = session.execute(
-            select(func.count()).where(OhlcvModel.symbol == symbol)
-        ).scalar_one()
-
-        has_any_row = total_count > 0
-
-        stmt = select(func.max(OhlcvModel.timestamp)).where(
-            OhlcvModel.symbol == symbol,
-            OhlcvModel.is_ended == True,
-            OhlcvModel.timestamp < ws_frontier_dt,
+        count_all = (
+            session.query(func.count()).filter(OhlcvModel.symbol == symbol).scalar()
         )
-        latest_ts = session.execute(stmt).scalar_one_or_none()
+
+        has_any_row = count_all > 0
+
+        latest_ts = (
+            session.query(func.max(OhlcvModel.timestamp))
+            .filter(
+                OhlcvModel.symbol == symbol,
+                OhlcvModel.is_ended == True,
+                OhlcvModel.timestamp < ws_frontier_dt,
+            )
+            .scalar()
+        )
 
     if latest_ts:
         interval_ms = INTERVAL_TO_MS.get(interval, 60_000)
@@ -111,7 +137,7 @@ def get_start_time_ms(
 
 
 # ================================================================
-#  OHLCV 저장
+#  OHLCV 저장 (🔥 반드시 commit 보장됨)
 # ================================================================
 def save_data(OhlcvModel, symbol, rows):
     if not rows:
@@ -123,15 +149,20 @@ def save_data(OhlcvModel, symbol, rows):
         ["symbol", "timestamp", "open", "high", "low", "close", "volume", "is_ended"]
     ].to_dict("records")
 
-    with SyncSessionLocal() as session:
+    logger.info(f"Saving into table={OhlcvModel.__tablename__}, rows={len(recs)}")
+
+    # 🔥 commit 보장
+    with SyncSessionLocal() as session, session.begin():
         stmt = insert(OhlcvModel).values(recs)
         update_cols = {
-            key: getattr(stmt.excluded, key)
-            for key in recs[0].keys()
-            if key not in ["symbol", "timestamp"]
+            k: getattr(stmt.excluded, k)
+            for k in recs[0].keys()
+            if k not in ["symbol", "timestamp"]
         }
+
         stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "timestamp"], set_=update_cols
+            index_elements=["symbol", "timestamp"],
+            set_=update_cols,
         )
         session.execute(stmt)
 
@@ -139,36 +170,40 @@ def save_data(OhlcvModel, symbol, rows):
 
 
 # ================================================================
-#  REST 백필 태스크 (완전 패치)
+#  REST 백필 태스크
 # ================================================================
 @celery_app.task(bind=True, name="ohlcv.backfill_symbol_interval")
 def backfill_symbol_interval(
-    self: Task, symbol, pair, interval, ws_frontier_ms=None, run_id=None
+    self: Task,
+    symbol,
+    pair,
+    interval,
+    ws_frontier_ms=None,
+    run_id=None,
 ):
-
     try:
         OhlcvModel = OHLCV_MODELS.get(interval)
         if not OhlcvModel:
-            raise ValueError(f"지원하지 않는 interval: {interval}")
+            raise ValueError(f"Unsupported interval: {interval}")
 
-        # pipeline OFF면 즉시 종료
+        # 파이프라인 OFF면 종료
         if not is_pipeline_active():
             upsert_backfill_progress(run_id, symbol, interval, "PENDING", 0, None, None)
-            return {"status": "SKIP", "symbol": symbol, "interval": interval}
+            return {"status": "SKIP"}
 
-        # ws_frontier 없으면 조회
-        if ws_frontier_ms is None:
-            with httpx.Client(timeout=20) as client:
-                r = client.get("https://fapi.binance.com/fapi/v1/time")
-                ws_frontier_ms = int(r.json()["serverTime"])
+        # 🔥 WS frontier = is_ended=False 중 가장 오래된 timestamp (없으면 대기)
+        ws_frontier_ms = detect_ws_frontier_ms(symbol, OhlcvModel)
+        if not ws_frontier_ms:
+            upsert_backfill_progress(run_id, symbol, interval, "PENDING", 0, None, None)
+            return {"status": "SKIP"}
 
-        # 시작점 계산
-        db_start_ms, has_any_row = get_start_time_ms(
+        # DB 시작 위치 계산
+        db_start_ms, has_any = get_start_time_ms(
             symbol, interval, OhlcvModel, ws_frontier_ms
         )
 
-        # ---- 이미 최신이면 즉시 SUCCESS ----
-        if has_any_row and db_start_ms and db_start_ms >= ws_frontier_ms:
+        # 이미 최신이면 즉시 SUCCESS
+        if has_any and db_start_ms and db_start_ms >= ws_frontier_ms:
             upsert_backfill_progress(
                 run_id, symbol, interval, "SUCCESS", 100, None, None
             )
@@ -179,8 +214,8 @@ def backfill_symbol_interval(
                 "saved": 0,
             }
 
-        # ---- DB에 데이터가 없으면 Binance 첫 캔들 시각 찾기 ----
-        if not has_any_row or db_start_ms is None:
+        # DB에 없으면 최초 캔들부터 시작
+        if not has_any or db_start_ms is None:
             with httpx.Client(timeout=20) as client:
                 r = client.get(
                     BINANCE_FAPI_URL,
@@ -193,47 +228,37 @@ def backfill_symbol_interval(
                 )
                 arr = r.json()
                 if not arr:
-                    # Binance 데이터조차 없음 → SUCCESS 처리
                     upsert_backfill_progress(
                         run_id, symbol, interval, "SUCCESS", 100, None, None
                     )
-                    return {
-                        "status": "COMPLETE",
-                        "symbol": symbol,
-                        "interval": interval,
-                    }
-
-                first_ms = int(arr[0][0])
-                start_ms = first_ms
+                    return {"status": "COMPLETE"}
+                start_ms = int(arr[0][0])
         else:
             start_ms = db_start_ms
 
-        # ---- 시작점이 frontier 이후 → SUCCESS ----
         if start_ms >= ws_frontier_ms:
             upsert_backfill_progress(
                 run_id, symbol, interval, "SUCCESS", 100, None, None
             )
-            return {"status": "COMPLETE", "symbol": symbol, "interval": interval}
+            return {"status": "COMPLETE"}
 
         # =======================================================
-        #  메인 수집 루프
+        #   메인 수집 루프
         # =======================================================
-        interval_ms = INTERVAL_TO_MS.get(interval, 60_000)
-        buffer = []
+        interval_ms = INTERVAL_TO_MS[interval]
         total_saved = 0
+        buffer = []
+
         progress_start = start_ms
         progress_end = ws_frontier_ms
 
         with httpx.Client(timeout=20) as client:
-            while True:
+            while start_ms < ws_frontier_ms:
                 if not is_pipeline_active():
                     upsert_backfill_progress(
                         run_id, symbol, interval, "PENDING", 0, None, None
                     )
                     return {"status": "SKIP"}
-
-                if start_ms >= ws_frontier_ms:
-                    break
 
                 r = client.get(
                     BINANCE_FAPI_URL,
@@ -245,22 +270,12 @@ def backfill_symbol_interval(
                         "limit": KLINE_LIMIT,
                     },
                 )
-                r.raise_for_status()
                 arr = r.json()
-
-                # ----- API 결과가 아예 없으면 SUCCESS -----
                 if not arr:
-                    upsert_backfill_progress(
-                        run_id, symbol, interval, "SUCCESS", 100, None, None
-                    )
-                    return {
-                        "status": "COMPLETE",
-                        "symbol": symbol,
-                        "interval": interval,
-                    }
+                    break
 
-                new_count = 0
                 last_open = None
+                new_count = 0
 
                 for k in arr:
                     open_ms = int(k[0])
@@ -279,21 +294,12 @@ def backfill_symbol_interval(
                             "is_ended": True,
                         }
                     )
-                    last_open = open_ms
                     new_count += 1
+                    last_open = open_ms
 
-                # ---- 새로 저장된 것이 0개 → SUCCESS ----
                 if new_count == 0:
-                    upsert_backfill_progress(
-                        run_id, symbol, interval, "SUCCESS", 100, None, None
-                    )
-                    return {
-                        "status": "COMPLETE",
-                        "symbol": symbol,
-                        "interval": interval,
-                    }
+                    break
 
-                # ---- 진행률 ----
                 pct = min(
                     round(
                         (last_open - progress_start)
@@ -313,18 +319,16 @@ def backfill_symbol_interval(
                     None,
                 )
 
-                # ---- 배치 저장 ----
                 if len(buffer) >= 50_000:
                     total_saved += save_data(OhlcvModel, symbol, buffer)
                     buffer.clear()
 
                 start_ms = last_open + interval_ms
 
-            # ------ 마지막 배치 저장 ------
-            if buffer:
-                total_saved += save_data(OhlcvModel, symbol, buffer)
+        # 마지막 버퍼 flush
+        if buffer:
+            total_saved += save_data(OhlcvModel, symbol, buffer)
 
-        # 최종 SUCCESS
         upsert_backfill_progress(run_id, symbol, interval, "SUCCESS", 100, None, None)
         return {
             "status": "COMPLETE",
