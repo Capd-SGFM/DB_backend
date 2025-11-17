@@ -1,12 +1,13 @@
 from datetime import datetime
 
-from sqlalchemy import String, TIMESTAMP, Numeric, ForeignKey, func
+from sqlalchemy import String, TIMESTAMP, Numeric, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
+
 from .base import Base
 
 
 class _IndicatorBase(Base):
-    """보조지표 공통 컬럼"""
+    """보조지표 공통 컬럼 (schema: trading_data)"""
 
     __abstract__ = True
     __table_args__ = {"schema": "trading_data"}
@@ -22,27 +23,21 @@ class _IndicatorBase(Base):
         primary_key=True,
     )
 
+    # === 여기서부터는 02_trading_data_schema.sql과 1:1 매칭 ===
     rsi_14: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     ema_7: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     ema_21: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     ema_99: Mapped[float] = mapped_column(Numeric(20, 7), nullable=True)
-    sma_7: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
-    sma_21: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
-    sma_99: Mapped[float] = mapped_column(Numeric(20, 7), nullable=True)
+
     macd: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     macd_signal: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     macd_hist: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
+
     bb_upper: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     bb_middle: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     bb_lower: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
-    volume_20: Mapped[float] = mapped_column(Numeric(20, 3), nullable=False)
 
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
+    volume_20: Mapped[float] = mapped_column(Numeric(20, 3), nullable=False)
 
 
 # --- 개별 타임프레임 테이블 ---

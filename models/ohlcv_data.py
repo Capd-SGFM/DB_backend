@@ -1,13 +1,11 @@
 from datetime import datetime
-
-from sqlalchemy import String, TIMESTAMP, Numeric, Boolean, ForeignKey, func
+from sqlalchemy import String, TIMESTAMP, Numeric, Boolean, ForeignKey, text
 from sqlalchemy.orm import Mapped, mapped_column
-
 from .base import Base
 
 
 class _OhlcvBase(Base):
-    """공통 컬럼(복합 PK: symbol, timestamp)"""
+    """캔들 데이터"""
 
     __abstract__ = True
     __table_args__ = {"schema": "trading_data"}
@@ -28,17 +26,14 @@ class _OhlcvBase(Base):
     low: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     close: Mapped[float] = mapped_column(Numeric(20, 7), nullable=False)
     volume: Mapped[float] = mapped_column(Numeric(20, 3), nullable=False)
-
-    is_ended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        TIMESTAMP(timezone=True),
+    is_ended: Mapped[bool] = mapped_column(
+        Boolean,
         nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
+        server_default=text("false"),
+        index=True,
     )
 
 
-# --- 개별 타임프레임 테이블 ---
 class Ohlcv1m(_OhlcvBase):
     __tablename__ = "ohlcv_1m"
 
