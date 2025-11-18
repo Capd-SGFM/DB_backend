@@ -8,6 +8,8 @@ from routers import get_crypto_info
 from backfill import ohlcv_backfill, symbols
 from routers.pipeline import router as pipeline_router
 
+# from routers.rest_progress import router as rest_progress_router
+
 import models  # noqa: F401 (모델 로딩용)
 from models.base import Base  # noqa: F401
 
@@ -37,6 +39,7 @@ app.include_router(get_crypto_info.router)
 app.include_router(ohlcv_backfill.router)
 app.include_router(symbols.router)
 app.include_router(pipeline_router)
+# app.include_router(rest_progress_router)
 
 
 @app.get("/")

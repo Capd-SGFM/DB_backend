@@ -305,3 +305,58 @@ async def get_backfill_progress():
         run_id=run_id,
         symbols=result,
     )
+
+
+# routers/pipeline.py 맨 아래 추가
+
+from models.rest_progress import RestProgress
+
+
+class RestIntervalModel(BaseModel):
+    interval: str
+    state: str
+    updated_at: str | None
+
+
+class RestSymbolModel(BaseModel):
+    symbol: str
+    intervals: dict[str, RestIntervalModel]
+
+
+class RestProgressResponse(BaseModel):
+    run_id: str | None
+    symbols: dict[str, RestSymbolModel]
+
+
+@router.get("/rest/progress", response_model=RestProgressResponse)
+async def get_rest_progress():
+    with SyncSessionLocal() as session:
+        # 최신 run_id 찾기
+        run_id = session.execute(
+            select(RestProgress.run_id)
+            .order_by(RestProgress.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if not run_id:
+            return RestProgressResponse(run_id=None, symbols={})
+
+        rows = (
+            session.execute(select(RestProgress).where(RestProgress.run_id == run_id))
+            .scalars()
+            .all()
+        )
+
+    symbols: dict[str, RestSymbolModel] = {}
+
+    for row in rows:
+        if row.symbol not in symbols:
+            symbols[row.symbol] = RestSymbolModel(symbol=row.symbol, intervals={})
+
+        symbols[row.symbol].intervals[row.interval] = RestIntervalModel(
+            interval=row.interval,
+            state=row.state,
+            updated_at=row.updated_at.isoformat() if row.updated_at else None,
+        )
+
+    return RestProgressResponse(run_id=run_id, symbols=symbols)

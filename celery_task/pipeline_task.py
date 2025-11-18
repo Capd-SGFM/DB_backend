@@ -22,6 +22,9 @@ from models.pipeline_state import (
     PipelineComponent,
 )
 from models.backfill_progress import BackfillProgress
+from celery_task.rest_maintenance_task import run_rest_maintenance
+
+from celery_task.indicator_task import update_last_indicator_for_symbol_interval
 
 __all__ = ["start_pipeline", "stop_pipeline", "run_maintenance_cycle"]
 
@@ -192,35 +195,31 @@ def stop_pipeline():
 # ================================================================
 @celery_app.task(name="pipeline.run_maintenance_cycle")
 def run_maintenance_cycle():
-    logger.info("[pipeline] Maintenance cycle 시작")
 
-    from .rest_maintenance_task import run_maintenance_cycle as rest_cycle
-    from .indicator_task import update_last_indicator_for_symbol_interval as ind_cycle
+    logger.info("[pipeline] Maintenance cycle started")
 
     while is_pipeline_active():
 
         # 🔵 REST 유지보수
         set_component_active(PipelineComponent.REST_MAINTENANCE, True)
-        logger.info("[pipeline] REST maintenance 시작")
+        logger.info("[pipeline] REST 유지보수 시작")
 
-        job = rest_cycle.delay()
-        while not job.ready():
+        rest_job = run_rest_maintenance.delay()
+        while not rest_job.ready():
             if not is_pipeline_active():
-                set_component_active(PipelineComponent.REST_MAINTENANCE, False)
                 return
             time.sleep(1)
 
         set_component_active(PipelineComponent.REST_MAINTENANCE, False)
-        logger.info("[pipeline] REST maintenance 완료")
+        logger.info("[pipeline] REST 유지보수 종료")
 
-        # 🟡 보조지표 계산
+        # 🟡 Indicator
         set_component_active(PipelineComponent.INDICATOR, True)
         logger.info("[pipeline] Indicator 계산 시작")
 
-        job = ind_cycle.delay()
-        while not job.ready():
+        ind_job = update_last_indicator_for_symbol_interval.delay()
+        while not ind_job.ready():
             if not is_pipeline_active():
-                set_component_active(PipelineComponent.INDICATOR, False)
                 return
             time.sleep(1)
 
@@ -229,4 +228,4 @@ def run_maintenance_cycle():
 
         time.sleep(1)
 
-    logger.info("[pipeline] Maintenance cycle 종료 (pipeline OFF)")
+    logger.info("[pipeline] Maintenance loop stopped")
