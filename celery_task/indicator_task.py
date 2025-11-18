@@ -123,12 +123,15 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         "bb_lower",
         "volume_20",
     ]
-    existing = [c for c in wanted_cols if c in df.columns]
-    missing = sorted(set(wanted_cols) - set(existing))
-    if missing:
-        logger.warning(f"[indicator] missing columns in _compute_indicators: {missing}")
+    for col in wanted_cols:
+        if col not in df.columns:
+            logger.warning(
+                f"[indicator] missing column '{col}' in computed df, filling with NaN"
+            )
+            df[col] = pd.NA
 
-    df_ind = df[existing].dropna()
+    # 이제는 무조건 컬럼이 존재하므로 KeyError 안 남
+    df_ind = df[wanted_cols].dropna()
     return df_ind
 
 
