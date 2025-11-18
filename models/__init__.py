@@ -4,6 +4,8 @@ from .crypto_info import CryptoInfo
 from .users import User
 from .pipeline_state import PipelineState, PipelineComponent
 from .backfill_progress import BackfillProgress
+from .indicator_progress import IndicatorProgress
+
 
 from .ohlcv_data import (
     # Ohlcv1m,
