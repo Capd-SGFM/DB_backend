@@ -13,6 +13,10 @@ from db_module.connect_sqlalchemy_engine import SyncSessionLocal
 from models.backfill_progress import BackfillProgress, reset_backfill_progress
 from sqlalchemy import select, desc
 
+# 🔹 REST / Indicator 진행현황용 모델
+from models.rest_progress import RestProgress
+from models.indicator_progress import IndicatorProgress
+
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
 
@@ -213,7 +217,7 @@ async def get_pipeline_status():
     ind = states.get("indicator", {"id": 5, "is_active": False})
 
     websocket_status = _map_engine_status(is_on, ws)
-    backfill_status = _map_backfill_status(is_on, bf)  # ★ 변경된 부분
+    backfill_status = _map_backfill_status(is_on, bf)  # ★ Backfill 전용 로직
     rest_status = _map_engine_status(is_on, rm)
     indicator_status = _map_engine_status(is_on, ind)
 
@@ -227,7 +231,7 @@ async def get_pipeline_status():
 
 
 # ==================================================
-#   Backfill 진행률 조회 API (변경 없음)
+#   Backfill 진행률 조회 API
 # ==================================================
 
 
@@ -307,9 +311,9 @@ async def get_backfill_progress():
     )
 
 
-# routers/pipeline.py 맨 아래 추가
-
-from models.rest_progress import RestProgress
+# ==================================================
+#   REST 유지보수 진행현황 조회 API
+# ==================================================
 
 
 class RestIntervalModel(BaseModel):
@@ -360,3 +364,63 @@ async def get_rest_progress():
         )
 
     return RestProgressResponse(run_id=run_id, symbols=symbols)
+
+
+# ==================================================
+#   Indicator 유지보수 진행현황 조회 API
+#   (/pipeline/indicator/progress)
+# ==================================================
+
+
+class IndicatorIntervalModel(BaseModel):
+    interval: str
+    state: str
+    pct_time: float
+    updated_at: str | None
+
+
+class IndicatorSymbolModel(BaseModel):
+    symbol: str
+    intervals: dict[str, IndicatorIntervalModel]
+
+
+class IndicatorProgressResponse(BaseModel):
+    run_id: str | None
+    symbols: dict[str, IndicatorSymbolModel]
+
+
+@router.get("/indicator/progress", response_model=IndicatorProgressResponse)
+async def get_indicator_progress():
+    with SyncSessionLocal() as session:
+        # 최신 run_id 찾기
+        run_id = session.execute(
+            select(IndicatorProgress.run_id)
+            .order_by(IndicatorProgress.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if not run_id:
+            return IndicatorProgressResponse(run_id=None, symbols={})
+
+        rows = (
+            session.execute(
+                select(IndicatorProgress).where(IndicatorProgress.run_id == run_id)
+            )
+            .scalars()
+            .all()
+        )
+
+    symbols: dict[str, IndicatorSymbolModel] = {}
+
+    for row in rows:
+        if row.symbol not in symbols:
+            symbols[row.symbol] = IndicatorSymbolModel(symbol=row.symbol, intervals={})
+
+        symbols[row.symbol].intervals[row.interval] = IndicatorIntervalModel(
+            interval=row.interval,
+            state=row.state,
+            pct_time=float(row.pct_time or 0.0),
+            updated_at=row.updated_at.isoformat() if row.updated_at else None,
+        )
+
+    return IndicatorProgressResponse(run_id=run_id, symbols=symbols)

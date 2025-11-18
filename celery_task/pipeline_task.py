@@ -24,7 +24,7 @@ from models.pipeline_state import (
 from models.backfill_progress import BackfillProgress
 from celery_task.rest_maintenance_task import run_rest_maintenance
 
-from celery_task.indicator_task import update_last_indicator_for_symbol_interval
+from celery_task.indicator_task import run_indicator_maintenance
 
 __all__ = ["start_pipeline", "stop_pipeline", "run_maintenance_cycle"]
 
@@ -217,7 +217,7 @@ def run_maintenance_cycle():
         set_component_active(PipelineComponent.INDICATOR, True)
         logger.info("[pipeline] Indicator 계산 시작")
 
-        ind_job = update_last_indicator_for_symbol_interval.delay()
+        ind_job = run_indicator_maintenance.delay()
         while not ind_job.ready():
             if not is_pipeline_active():
                 return

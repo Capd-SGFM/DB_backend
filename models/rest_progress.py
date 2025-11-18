@@ -3,7 +3,7 @@ from sqlalchemy import Column, String, TIMESTAMP, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import declarative_base
 
-Base = declarative_base()
+from .base import Base
 
 
 class RestProgress(Base):

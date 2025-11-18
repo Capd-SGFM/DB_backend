@@ -1,16 +1,17 @@
-import pandas as pd
-import pandas_ta as ta
+import uuid
 from datetime import datetime
 from typing import Optional
 
+import pandas as pd
+import pandas_ta as ta
 from celery import Task
-
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from db_module.connect_sqlalchemy_engine import SyncSessionLocal
-from models import OHLCV_MODELS, INDICATOR_MODELS
+from models import OHLCV_MODELS, INDICATOR_MODELS, CryptoInfo
+from models.indicator_progress import IndicatorProgress
 from models.pipeline_state import (
     is_pipeline_active,
     set_component_error,
@@ -19,6 +20,13 @@ from models.pipeline_state import (
 from . import celery_app
 
 
+# Indicator 유지보수 대상 인터벌(Backfill/REST와 맞춤)
+INTERVALS = ["1h", "4h", "1d", "1w", "1M"]
+
+
+# =========================================================
+#   공통: OHLCV 로딩 + 보조지표 계산 + UPSERT
+# =========================================================
 def _load_ohlcv_ended_df(
     symbol: str, interval: str, limit: Optional[int] = None
 ) -> Optional[pd.DataFrame]:
@@ -167,31 +175,70 @@ def _upsert_indicators(
     if not records:
         return 0
 
-    with SyncSessionLocal() as session:
-        with session.begin():
-            stmt = insert(IndicatorModel).values(records)
-            keys = records[0].keys()
+    with SyncSessionLocal() as session, session.begin():
+        stmt = insert(IndicatorModel).values(records)
+        keys = records[0].keys()
 
-            update_cols = {
-                k: getattr(stmt.excluded, k)
-                for k in keys
-                if k not in ("symbol", "timestamp")
-            }
+        update_cols = {
+            k: getattr(stmt.excluded, k)
+            for k in keys
+            if k not in ("symbol", "timestamp")
+        }
 
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["symbol", "timestamp"],
-                set_=update_cols,
-            )
-            session.execute(stmt)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol", "timestamp"],
+            set_=update_cols,
+        )
+        session.execute(stmt)
 
     return len(records)
 
 
-# =====================
-# Celery Tasks
-# =====================
+# =========================================================
+#   indicator_progress UPSERT (유지보수 엔진 UI용)
+# =========================================================
+def upsert_indicator_progress(
+    run_id: str,
+    symbol: str,
+    interval: str,
+    state: str,
+    pct_time: float = 0.0,
+    last_ts: Optional[datetime] = None,
+    error: Optional[str] = None,
+):
+    """trading_data.indicator_progress UPSERT."""
+    if not run_id:
+        return
+
+    with SyncSessionLocal() as session, session.begin():
+        stmt = (
+            insert(IndicatorProgress)
+            .values(
+                run_id=run_id,
+                symbol=symbol,
+                interval=interval,
+                state=state,
+                pct_time=pct_time,
+                last_candle_ts=last_ts,
+                last_error=error,
+            )
+            .on_conflict_do_update(
+                index_elements=["run_id", "symbol", "interval"],
+                set_={
+                    "state": state,
+                    "pct_time": pct_time,
+                    "last_candle_ts": last_ts,
+                    "last_error": error,
+                    "updated_at": text("now()"),
+                },
+            )
+        )
+        session.execute(stmt)
 
 
+# =====================
+# ① 최초 대량 계산(심볼/인터벌 단위) — 필요시 사용
+# =====================
 @celery_app.task(bind=True, name="indicator.bulk_init_indicators_symbol_interval")
 def bulk_init_indicators_symbol_interval(
     self: Task, symbol: str, interval: str
@@ -260,6 +307,9 @@ def bulk_init_indicators_symbol_interval(
         raise
 
 
+# =====================
+# ② 실시간용 per-symbol 태스크 (웹소켓에서 사용)
+# =====================
 @celery_app.task(bind=True, name="indicator.update_last_indicator_for_symbol_interval")
 def update_last_indicator_for_symbol_interval(
     self: Task, symbol: str, interval: str
@@ -330,3 +380,130 @@ def update_last_indicator_for_symbol_interval(
         except Exception:
             logger.exception("[indicator.update_last] failed to save last_error")
         raise
+
+
+# =====================
+# ③ 파이프라인용 Indicator 유지보수 엔진
+#     (모든 심볼×인터벌을 한 번에 돌리고 진행현황 저장)
+# =====================
+@celery_app.task(name="indicator.run_indicator_maintenance")
+def run_indicator_maintenance() -> dict:
+    """
+    파이프라인 Maintenance 사이클에서 호출되는 보조지표 엔진.
+    - 모든 심볼 × INTERVALS 에 대해:
+        * OHLCV(is_ended=True) 로부터 보조지표 전부 재계산
+        * indicators_{interval} 에 upsert
+        * indicator_progress 에 PENDING/PROGRESS/SUCCESS/FAILURE 기록
+    - 진행률 pct_time 은 간단히
+        * 작업 시작 시 0
+        * 계산/저장 완료 시 100 으로만 사용 (세밀한 %는 생략)
+    """
+    logger.info("[Indicator] 유지보수 엔진 시작")
+
+    if not is_pipeline_active():
+        logger.info("[Indicator] pipeline inactive → 종료")
+        return {"status": "INACTIVE"}
+
+    run_id = f"ind-{uuid.uuid4().hex}"
+    logger.info(f"[Indicator] run_id={run_id}")
+
+    # 1) 심볼 목록 조회
+    with SyncSessionLocal() as session:
+        symbols = (
+            session.query(CryptoInfo.symbol, CryptoInfo.pair)
+            .filter(CryptoInfo.pair.isnot(None))
+            .all()
+        )
+
+    # 2) 모든 심볼×인터벌에 PENDING dummy row 생성
+    with SyncSessionLocal() as session, session.begin():
+        for sym, _ in symbols:
+            for interval in INTERVALS:
+                stmt = (
+                    insert(IndicatorProgress)
+                    .values(
+                        run_id=run_id,
+                        symbol=sym,
+                        interval=interval,
+                        state="PENDING",
+                        pct_time=0.0,
+                        last_candle_ts=None,
+                        last_error=None,
+                    )
+                    .on_conflict_do_nothing()
+                )
+                session.execute(stmt)
+
+    # 3) 실제 계산 루프
+    total = 0
+    success = 0
+
+    for sym, _pair in symbols:
+        if not is_pipeline_active():
+            logger.info("[Indicator] pipeline OFF → 중단")
+            return {"status": "STOPPED", "run_id": run_id}
+
+        for interval in INTERVALS:
+            total += 1
+            try:
+                df_ohlcv = _load_ohlcv_ended_df(sym, interval, limit=None)
+
+                # OHLCV 자체가 없으면 "유지보수할 것 없음" → SUCCESS(100)
+                if df_ohlcv is None or df_ohlcv.empty:
+                    upsert_indicator_progress(
+                        run_id, sym, interval, "SUCCESS", 100.0, None, None
+                    )
+                    continue
+
+                # 작업 시작
+                upsert_indicator_progress(
+                    run_id, sym, interval, "PROGRESS", 0.0, None, None
+                )
+
+                df_ind = _compute_indicators(df_ohlcv)
+                if df_ind.empty:
+                    # 지표 계산 결과가 없으면 그냥 성공 취급
+                    upsert_indicator_progress(
+                        run_id, sym, interval, "SUCCESS", 100.0, None, None
+                    )
+                    success += 1
+                    continue
+
+                _upsert_indicators(sym, interval, df_ind, only_last=False)
+                last_ts = df_ind.index[-1]
+                if isinstance(last_ts, pd.Timestamp):
+                    last_ts = last_ts.to_pydatetime()
+
+                upsert_indicator_progress(
+                    run_id,
+                    sym,
+                    interval,
+                    "SUCCESS",
+                    100.0,
+                    last_ts,
+                    None,
+                )
+                success += 1
+
+            except Exception as e:
+                logger.exception(f"[Indicator] 유지보수 오류: {sym} {interval}: {e!r}")
+                try:
+                    set_component_error(PipelineComponent.INDICATOR, str(e))
+                except Exception:
+                    logger.exception(
+                        "[Indicator] failed to save last_error to pipeline_state"
+                    )
+
+                upsert_indicator_progress(
+                    run_id, sym, interval, "FAILURE", 0.0, None, str(e)
+                )
+
+    logger.info(
+        f"[Indicator] 유지보수 완료: total={total}, success={success}, run_id={run_id}"
+    )
+    return {
+        "status": "SUCCESS" if total == success else "PARTIAL",
+        "run_id": run_id,
+        "total": total,
+        "success": success,
+    }
