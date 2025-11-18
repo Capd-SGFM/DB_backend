@@ -123,8 +123,12 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
         "bb_lower",
         "volume_20",
     ]
-    df_ind = df[wanted_cols].dropna()
+    existing = [c for c in wanted_cols if c in df.columns]
+    missing = sorted(set(wanted_cols) - set(existing))
+    if missing:
+        logger.warning(f"[indicator] missing columns in _compute_indicators: {missing}")
 
+    df_ind = df[existing].dropna()
     return df_ind
 
 
