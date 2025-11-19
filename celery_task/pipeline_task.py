@@ -59,40 +59,13 @@ def start_pipeline():
 @celery_app.task(name="pipeline.wait_for_ws_data", bind=True, max_retries=10)
 def wait_for_ws_data(self):
     """
-    WebSocket 데이터가 수집되기 시작할 때까지 대기 (최대 30초)
+    WebSocket 데이터가 수집되기 시작할 때까지 대기 (최대 3초)
     """
     if not is_pipeline_active():
         return False
 
-    # 간단히 3초 대기 후 리트라이 하는 방식으로 구현 (기존 sleep(30) 대체)
-    # 실제로는 DB에 데이터가 들어왔는지 체크하는 것이 더 정확하지만,
-    # 기존 로직의 의도(안정화 대기)를 살려 단순 딜레이로 처리하거나,
-    # 혹은 단순히 다음 단계로 넘김. 여기서는 30초를 쪼개서 대기하지 않고
-    # 별도 체크 없이 30초 후에 실행되도록 countdown을 줄 수도 있음.
-    # 하지만 chain 상에서는 앞 task가 끝나야 뒤가 실행되므로,
-    # 여기서는 단순히 sleep 하고 리턴하거나,
-    # 좀 더 우아하게는 retry를 사용.
-    
-    # 여기서는 기존 로직(time.sleep(30))을 비동기적으로 처리하기 위해
-    # 이 태스크 자체가 30초 딜레이를 갖는 것보다,
-    # start_pipeline에서 이 태스크를 호출할 때 countdown=30을 주는 것이 나을 수 있으나,
-    # chain 내부라 복잡함.
-    # 단순히 여기서 sleep(30)을 하는 것은 worker를 블로킹하므로 좋지 않음.
-    # 하지만 초기화 1회성이므로 큰 문제는 아님.
-    # 개선: 그냥 바로 리턴하고, 다음 단계에서 필요한 데이터를 체크하도록 함.
-    # 혹은 retry를 이용해 데이터가 들어왔는지 확인.
-    
-    # 여기서는 "안정화 대기"라는 명목하에 30초를 기다렸던 것이므로,
-    # 실제 데이터가 들어왔는지 확인하는 로직으로 변경하는 것이 바람직함.
-    # 하지만 간단히 구현하기 위해 sleep 대신, retry backoff를 사용하지 않고
-    # 그냥 통과시키되, backfill task 내부에서 데이터 없으면 retry 하도록 위임.
-    
-    # 일단 기존 로직 존중하여 30초 대기 (블로킹이지만 1회성)
-    # *더 나은 방법*: 이 태스크를 soft_time_limit 등으로 제어하거나
-    # 그냥 넘어가고 backfill에서 frontier 체크를 강화.
-    
-    logger.info("[pipeline] WebSocket 안정화 대기 (30s)...")
-    time.sleep(30) 
+    logger.info("[pipeline] WebSocket 안정화 대기 (3s)...")
+    time.sleep(3) 
     return True
 
 
@@ -134,7 +107,7 @@ def prepare_backfill_and_execute(prev_result):
             .all()
         )
 
-    intervals = ["1h", "4h", "1d", "1w", "1M"]
+    intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 
     # -----------------------------
     # BackfillProgress Dummy row 생성
