@@ -241,6 +241,7 @@ class BackfillIntervalProgress(BaseModel):
     state: str
     pct_time: float
     last_updated_iso: str | None
+    last_error: str | None
 
 
 class BackfillSymbolProgress(BaseModel):
@@ -287,6 +288,7 @@ async def get_backfill_progress():
             state=row.state,
             pct_time=float(row.pct_time or 0.0),
             last_updated_iso=row.updated_at.isoformat() if row.updated_at else None,
+            last_error=row.last_error,
         )
 
     # 심볼 단위 상태 재계산
@@ -321,6 +323,7 @@ class RestIntervalModel(BaseModel):
     interval: str
     state: str
     updated_at: str | None
+    last_error: str | None
 
 
 class RestSymbolModel(BaseModel):
@@ -362,6 +365,7 @@ async def get_rest_progress():
             interval=row.interval,
             state=row.state,
             updated_at=row.updated_at.isoformat() if row.updated_at else None,
+            last_error=row.last_error,
         )
 
     return RestProgressResponse(run_id=run_id, symbols=symbols)
@@ -378,6 +382,7 @@ class IndicatorIntervalModel(BaseModel):
     state: str
     pct_time: float
     updated_at: str | None
+    last_error: str | None
 
 
 class IndicatorSymbolModel(BaseModel):
@@ -422,6 +427,7 @@ async def get_indicator_progress():
             state=row.state,
             pct_time=float(row.pct_time or 0.0),
             updated_at=row.updated_at.isoformat() if row.updated_at else None,
+            last_error=row.last_error,
         )
 
 

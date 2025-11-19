@@ -9,11 +9,11 @@ from .websocket_progress import WebSocketProgress
 
 
 from .ohlcv_data import (
-    # Ohlcv1m,
-    # Ohlcv3m,
-    # Ohlcv5m,
-    # Ohlcv15m,
-    # Ohlcv30m,
+    Ohlcv1m,
+    Ohlcv3m,
+    Ohlcv5m,
+    Ohlcv15m,
+    Ohlcv30m,
     Ohlcv1h,
     Ohlcv4h,
     Ohlcv1d,
@@ -22,11 +22,11 @@ from .ohlcv_data import (
 )
 
 from .indicators import (
-    # Indicator1m,
-    # Indicator3m,
-    # Indicator5m,
-    # Indicator15m,
-    # Indicator30m,
+    Indicator1m,
+    Indicator3m,
+    Indicator5m,
+    Indicator15m,
+    Indicator30m,
     Indicator1h,
     Indicator4h,
     Indicator1d,
@@ -36,11 +36,11 @@ from .indicators import (
 
 # 인터벌별 OHLCV 모델 매핑
 OHLCV_MODELS = {
-    # "1m": Ohlcv1m,
-    # "3m": Ohlcv3m,
-    # "5m": Ohlcv5m,
-    # "15m": Ohlcv15m,
-    # "30m": Ohlcv30m,
+    "1m": Ohlcv1m,
+    "3m": Ohlcv3m,
+    "5m": Ohlcv5m,
+    "15m": Ohlcv15m,
+    "30m": Ohlcv30m,
     "1h": Ohlcv1h,
     "4h": Ohlcv4h,
     "1d": Ohlcv1d,
@@ -50,11 +50,11 @@ OHLCV_MODELS = {
 
 # 인터벌별 보조지표 모델 매핑
 INDICATOR_MODELS = {
-    # "1m": Indicator1m,
-    # "3m": Indicator3m,
-    # "5m": Indicator5m,
-    # "15m": Indicator15m,
-    # "30m": Indicator30m,
+    "1m": Indicator1m,
+    "3m": Indicator3m,
+    "5m": Indicator5m,
+    "15m": Indicator15m,
+    "30m": Indicator30m,
     "1h": Indicator1h,
     "4h": Indicator4h,
     "1d": Indicator1d,

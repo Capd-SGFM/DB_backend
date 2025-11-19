@@ -81,6 +81,122 @@ def _load_ohlcv_ended_df(
     return df
 
 
+def _load_ohlcv_incremental(
+    symbol: str, interval: str, last_indicator_ts: Optional[datetime] = None
+) -> Optional[pd.DataFrame]:
+    """
+    증분 계산용 OHLCV 로드.
+    
+    - last_indicator_ts가 None이면: 전체 데이터 로드 (최초 계산)
+    - last_indicator_ts가 있으면: 그 이후 데이터만 로드
+      + 단, 보조지표 계산을 위해 lookback 기간(100개) 포함
+    
+    Args:
+        symbol: 심볼
+        interval: 인터벌
+        last_indicator_ts: 마지막으로 계산된 지표의 timestamp
+        
+    Returns:
+        OHLCV DataFrame (index=timestamp) 또는 None
+    """
+    OhlcvModel = OHLCV_MODELS.get(interval)
+    if OhlcvModel is None:
+        logger.error(f"[indicator] 지원하지 않는 인터벌: {interval}")
+        return None
+
+    with SyncSessionLocal() as session:
+        # 기본 쿼리: is_ended=True인 캔들만
+        stmt = select(
+            OhlcvModel.timestamp,
+            OhlcvModel.open,
+            OhlcvModel.high,
+            OhlcvModel.low,
+            OhlcvModel.close,
+            OhlcvModel.volume,
+        ).where(OhlcvModel.symbol == symbol, OhlcvModel.is_ended.is_(True))
+
+        if last_indicator_ts is not None:
+            # 증분 계산: last_indicator_ts 이후 데이터만
+            # 단, lookback 기간을 위해 100개 이전부터 로드
+            
+            # 1) last_indicator_ts 이후의 모든 데이터
+            stmt_new = stmt.where(OhlcvModel.timestamp > last_indicator_ts)
+            
+            # 2) last_indicator_ts 이전 100개 (warm-up용)
+            stmt_lookback = (
+                select(
+                    OhlcvModel.timestamp,
+                    OhlcvModel.open,
+                    OhlcvModel.high,
+                    OhlcvModel.low,
+                    OhlcvModel.close,
+                    OhlcvModel.volume,
+                )
+                .where(
+                    OhlcvModel.symbol == symbol,
+                    OhlcvModel.is_ended.is_(True),
+                    OhlcvModel.timestamp <= last_indicator_ts,
+                )
+                .order_by(OhlcvModel.timestamp.desc())
+                .limit(100)
+            )
+            
+            # 3) 두 쿼리 결과 합치기
+            rows_new = session.execute(stmt_new.order_by(OhlcvModel.timestamp.asc())).all()
+            rows_lookback = session.execute(stmt_lookback).all()
+            
+            # lookback은 desc로 가져왔으니 reverse
+            rows = list(reversed(rows_lookback)) + list(rows_new)
+            
+        else:
+            # 최초 계산: 전체 데이터
+            stmt = stmt.order_by(OhlcvModel.timestamp.asc())
+            rows = session.execute(stmt).all()
+
+    if not rows:
+        return None
+
+    df = pd.DataFrame(
+        [
+            {
+                "timestamp": r[0],
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "volume": float(r[5]),
+            }
+            for r in rows
+        ]
+    )
+
+    df = df.sort_values("timestamp").set_index("timestamp")
+    return df
+
+
+def _get_last_indicator_timestamp(symbol: str, interval: str) -> Optional[datetime]:
+    """
+    indicators_{interval} 테이블에서 해당 symbol의 마지막 timestamp 조회.
+    
+    Returns:
+        마지막 timestamp 또는 None (데이터 없으면)
+    """
+    IndicatorModel = INDICATOR_MODELS.get(interval)
+    if IndicatorModel is None:
+        return None
+    
+    with SyncSessionLocal() as session:
+        result = (
+            session.query(IndicatorModel.timestamp)
+            .filter(IndicatorModel.symbol == symbol)
+            .order_by(IndicatorModel.timestamp.desc())
+            .limit(1)
+            .first()
+        )
+    
+    return result[0] if result else None
+
+
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     OHLCV DataFrame(index=timestamp)에 보조지표 컬럼들을 계산해서 리턴.
@@ -469,20 +585,51 @@ def run_indicator_maintenance() -> dict:
         for interval in INTERVALS:
             total += 1
             try:
-                df_ohlcv = _load_ohlcv_ended_df(sym, interval, limit=None)
+                # 증분 계산: 마지막으로 계산된 timestamp 조회
+                last_indicator_ts = _get_last_indicator_timestamp(sym, interval)
+                
+                if last_indicator_ts:
+                    logger.info(
+                        f"[Indicator] {sym} {interval}: 증분 계산 (마지막={last_indicator_ts.isoformat()})"
+                    )
+                else:
+                    logger.info(f"[Indicator] {sym} {interval}: 최초 계산")
+                
+                # 증분 로드: 마지막 이후 데이터만 + lookback 100개
+                df_ohlcv = _load_ohlcv_incremental(sym, interval, last_indicator_ts)
 
                 # OHLCV 자체가 없으면 "유지보수할 것 없음" → SUCCESS(100)
                 if df_ohlcv is None or df_ohlcv.empty:
                     upsert_indicator_progress(
                         run_id, sym, interval, "SUCCESS", 100.0, None, None
                     )
+                    success += 1
                     continue
+
+                # 새로운 데이터가 있는지 확인
+                if last_indicator_ts is not None:
+                    # last_indicator_ts 이후의 데이터만 필터링
+                    df_new = df_ohlcv[df_ohlcv.index > last_indicator_ts]
+                    
+                    if df_new.empty:
+                        # 새로운 데이터 없음 → 이미 최신 상태
+                        logger.info(f"[Indicator] {sym} {interval}: 새 데이터 없음 (이미 최신)")
+                        upsert_indicator_progress(
+                            run_id, sym, interval, "SUCCESS", 100.0, last_indicator_ts, None
+                        )
+                        success += 1
+                        continue
+                    
+                    logger.info(
+                        f"[Indicator] {sym} {interval}: {len(df_new)}개 새 캔들 발견"
+                    )
 
                 # 작업 시작
                 upsert_indicator_progress(
                     run_id, sym, interval, "PROGRESS", 0.0, None, None
                 )
 
+                # 전체 데이터로 지표 계산 (lookback 포함)
                 df_ind = _compute_indicators(df_ohlcv)
                 if df_ind.empty:
                     # 지표 계산 결과가 없으면 그냥 성공 취급
@@ -492,7 +639,32 @@ def run_indicator_maintenance() -> dict:
                     success += 1
                     continue
 
-                _upsert_indicators(sym, interval, df_ind, only_last=False)
+                # 증분 저장: 마지막 이후 데이터만 저장
+                if last_indicator_ts is not None:
+                    # last_indicator_ts 이후의 지표만 저장
+                    df_ind_to_save = df_ind[df_ind.index > last_indicator_ts]
+                    
+                    if df_ind_to_save.empty:
+                        logger.warning(
+                            f"[Indicator] {sym} {interval}: 계산했지만 저장할 지표 없음"
+                        )
+                        upsert_indicator_progress(
+                            run_id, sym, interval, "SUCCESS", 100.0, last_indicator_ts, None
+                        )
+                        success += 1
+                        continue
+                    
+                    saved_count = _upsert_indicators(sym, interval, df_ind_to_save, only_last=False)
+                    logger.info(
+                        f"[Indicator] {sym} {interval}: {saved_count}개 지표 저장 (증분)"
+                    )
+                else:
+                    # 최초 계산: 전체 저장
+                    saved_count = _upsert_indicators(sym, interval, df_ind, only_last=False)
+                    logger.info(
+                        f"[Indicator] {sym} {interval}: {saved_count}개 지표 저장 (최초)"
+                    )
+                
                 last_ts = df_ind.index[-1]
                 if isinstance(last_ts, pd.Timestamp):
                     last_ts = last_ts.to_pydatetime()
