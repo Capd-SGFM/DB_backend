@@ -191,6 +191,12 @@ async def run_ws_loop():
                     ping_timeout=PING_TIMEOUT,
                 ) as ws:
                     logger.info("[WS] ✅ WebSocket connected")
+
+                    # ✅ 연결 성공 시 메인 엔진 상태의 에러도 클리어
+                    try:
+                        set_component_error(PipelineComponent.WEBSOCKET, None)
+                    except Exception:
+                        logger.exception("[WS] Failed to clear component error")
                     
                     # 모든 심볼×인터벌 조합을 CONNECTED 상태로 초기화
                     for symbol, pair, interval in symbol_intervals:
