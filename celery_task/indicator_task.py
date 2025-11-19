@@ -109,7 +109,7 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # volume 20 이동평균
     df["volume_20"] = df["volume"].rolling(20).mean()
 
-    # 실제 DB에 넣을 컬럼만 추출 + NaN 제거
+    # 실제 DB에 넣을 컬럼만 추출
     wanted_cols = [
         "rsi_14",
         "ema_7",
@@ -130,8 +130,24 @@ def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
             )
             df[col] = pd.NA
 
-    # 이제는 무조건 컬럼이 존재하므로 KeyError 안 남
-    df_ind = df[wanted_cols].dropna()
+    # ema_99는 99개의 캔들이 필요하므로 1M 같은 경우 데이터가 부족할 수 있음
+    # ema_99를 제외한 컬럼들만 dropna() 적용
+    required_cols = [
+        "rsi_14",
+        "ema_7",
+        "ema_21",
+        # "ema_99",  # 제외: nullable
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "bb_upper",
+        "bb_middle",
+        "bb_lower",
+        "volume_20",
+    ]
+    
+    # required_cols에 대해서만 dropna 수행
+    df_ind = df[wanted_cols].dropna(subset=required_cols)
     return df_ind
 
 
