@@ -16,6 +16,7 @@ from sqlalchemy import select, desc
 # 🔹 REST / Indicator 진행현황용 모델
 from models.rest_progress import RestProgress
 from models.indicator_progress import IndicatorProgress
+from models.websocket_progress import WebSocketProgress
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
@@ -423,4 +424,68 @@ async def get_indicator_progress():
             updated_at=row.updated_at.isoformat() if row.updated_at else None,
         )
 
+
     return IndicatorProgressResponse(run_id=run_id, symbols=symbols)
+
+
+# ==================================================
+#   WebSocket 실시간 연결 상태 조회 API
+#   (/pipeline/websocket/progress)
+# ==================================================
+
+
+class WebSocketIntervalModel(BaseModel):
+    interval: str
+    state: str
+    message_count: int
+    last_message_ts: str | None
+    last_error: str | None
+
+
+class WebSocketSymbolModel(BaseModel):
+    symbol: str
+    intervals: dict[str, WebSocketIntervalModel]
+
+
+class WebSocketProgressResponse(BaseModel):
+    run_id: str | None
+    symbols: dict[str, WebSocketSymbolModel]
+
+
+@router.get("/websocket/progress", response_model=WebSocketProgressResponse)
+async def get_websocket_progress():
+    with SyncSessionLocal() as session:
+        # 최신 run_id 찾기
+        run_id = session.execute(
+            select(WebSocketProgress.run_id)
+            .order_by(WebSocketProgress.updated_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if not run_id:
+            return WebSocketProgressResponse(run_id=None, symbols={})
+
+        rows = (
+            session.execute(
+                select(WebSocketProgress).where(WebSocketProgress.run_id == run_id)
+            )
+            .scalars()
+            .all()
+        )
+
+    symbols: dict[str, WebSocketSymbolModel] = {}
+
+    for row in rows:
+        if row.symbol not in symbols:
+            symbols[row.symbol] = WebSocketSymbolModel(symbol=row.symbol, intervals={})
+
+        symbols[row.symbol].intervals[row.interval] = WebSocketIntervalModel(
+            interval=row.interval,
+            state=row.state,
+            message_count=row.message_count,
+            last_message_ts=row.last_message_ts.isoformat() if row.last_message_ts else None,
+            last_error=row.last_error,
+        )
+
+    return WebSocketProgressResponse(run_id=run_id, symbols=symbols)
+

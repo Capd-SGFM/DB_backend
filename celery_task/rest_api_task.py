@@ -42,27 +42,23 @@ INTERVAL_TO_MS = {
 def detect_ws_frontier_ms(symbol: str, OhlcvModel):
     """
     1) DB에 is_ended=False가 있다면 → 가장 오래된 timestamp 사용
-    2) 없다면 → websocket이 데이터를 넣을 때까지 대기
+    2) 없다면 → None 반환 (Caller가 Retry 처리)
     """
-    while True:
-        if not is_pipeline_active():
-            return None
+    if not is_pipeline_active():
+        return None
 
-        with SyncSessionLocal() as session:
-            earliest = (
-                session.query(OhlcvModel.timestamp)
-                .filter(OhlcvModel.symbol == symbol, OhlcvModel.is_ended == False)
-                .order_by(asc(OhlcvModel.timestamp))
-                .first()
-            )
-
-        if earliest:
-            return int(earliest[0].timestamp() * 1000)
-
-        logger.info(
-            f"[Backfill] WS frontier 대기 중: symbol={symbol} (is_ended=False row 없음)"
+    with SyncSessionLocal() as session:
+        earliest = (
+            session.query(OhlcvModel.timestamp)
+            .filter(OhlcvModel.symbol == symbol, OhlcvModel.is_ended == False)
+            .order_by(asc(OhlcvModel.timestamp))
+            .first()
         )
-        time.sleep(1)
+
+    if earliest:
+        return int(earliest[0].timestamp() * 1000)
+
+    return None
 
 
 # ================================================================
@@ -194,8 +190,11 @@ def backfill_symbol_interval(
         # 🔥 WS frontier = is_ended=False 중 가장 오래된 timestamp (없으면 대기)
         ws_frontier_ms = detect_ws_frontier_ms(symbol, OhlcvModel)
         if not ws_frontier_ms:
+            # 데이터가 아직 없으면 3초 뒤 재시도 (최대 20번 = 1분)
+            # upsert_backfill_progress는 PENDING 유지
             upsert_backfill_progress(run_id, symbol, interval, "PENDING", 0, None, None)
-            return {"status": "SKIP"}
+            logger.info(f"[Backfill] {symbol} {interval}: WS data not found, retrying...")
+            raise self.retry(countdown=3, max_retries=20)
 
         # DB 시작 위치 계산
         db_start_ms, has_any = get_start_time_ms(
