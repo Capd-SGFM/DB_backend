@@ -1,15 +1,18 @@
 # celery_task/websocket_task.py
 import asyncio
 import json
+import uuid
 from datetime import datetime, timezone
 
 import websockets
 from websockets.exceptions import ConnectionClosedError
 from loguru import logger
+from sqlalchemy.dialects.postgresql import insert
 
 from celery_task import celery_app
 from db_module.connect_sqlalchemy_engine import SyncSessionLocal
 from models import OHLCV_MODELS, CryptoInfo
+from models.websocket_progress import WebSocketProgress
 from models.pipeline_state import (
     is_pipeline_active,
     set_component_error,
@@ -24,6 +27,49 @@ PING_TIMEOUT = 60  # pong 응답 기다리는 최대 시간(초) – 넉넉하�
 RECONNECT_DELAY = 5  # 에러 발생 시 재접속까지 대기(초)
 PIPELINE_INACTIVE_SLEEP = 5  # 파이프라인 OFF일 때 재확인 주기(초)
 NO_SYMBOL_SLEEP = 10  # 구독할 심볼 없을 때 대기(초)
+
+
+# 전역 변수로 현재 WebSocket run_id 저장
+CURRENT_WS_RUN_ID = None
+
+
+def upsert_websocket_progress(
+    run_id: str,
+    symbol: str,
+    interval: str,
+    state: str,
+    message_count: int = 0,
+    last_error: str | None = None,
+):
+    """
+    websocket_progress 테이블에 상태 업데이트 (UPSERT).
+    """
+    now = datetime.now(timezone.utc)
+    with SyncSessionLocal() as session, session.begin():
+        stmt = (
+            insert(WebSocketProgress)
+            .values(
+                run_id=run_id,
+                symbol=symbol,
+                interval=interval,
+                state=state,
+                last_message_ts=now if state == "CONNECTED" else None,
+                message_count=message_count,
+                last_error=last_error,
+                updated_at=now,
+            )
+            .on_conflict_do_update(
+                index_elements=["run_id", "symbol", "interval"],
+                set_={
+                    "state": state,
+                    "last_message_ts": now if state == "CONNECTED" else WebSocketProgress.last_message_ts,
+                    "message_count": message_count,
+                    "last_error": last_error,
+                    "updated_at": now,
+                },
+            )
+        )
+        session.execute(stmt)
 
 
 @celery_app.task(name="ohlcv.websocket_collector")
@@ -83,6 +129,16 @@ async def run_ws_loop():
     - 예외 발생 시 RECONNECT_DELAY 후 재접속
     - 재접속 에러 및 예상치 못한 에러는 모두 last_error 에 기록
     """
+    global CURRENT_WS_RUN_ID
+    
+    # WebSocket 세션 run_id 생성
+    if CURRENT_WS_RUN_ID is None:
+        CURRENT_WS_RUN_ID = f"ws-{uuid.uuid4().hex}"
+        logger.info(f"[WS] Generated new run_id: {CURRENT_WS_RUN_ID}")
+    
+    # 메시지 카운터 (심볼×인터벌별)
+    message_counters: dict[tuple[str, str], int] = {}
+    
     while True:
         try:
             # ───────── 파이프라인 OFF면 WebSocket 연결 시도 자체를 안 함 ─────────
@@ -90,6 +146,18 @@ async def run_ws_loop():
                 logger.info(
                     f"[WS] pipeline inactive. sleep {PIPELINE_INACTIVE_SLEEP}s..."
                 )
+                # 모든 연결을 DISCONNECTED로 표시
+                for (symbol, interval), _ in message_counters.items():
+                    try:
+                        upsert_websocket_progress(
+                            run_id=CURRENT_WS_RUN_ID,
+                            symbol=symbol,
+                            interval=interval,
+                            state="DISCONNECTED",
+                            message_count=message_counters.get((symbol, interval), 0),
+                        )
+                    except Exception:
+                        logger.exception(f"[WS] Failed to update DISCONNECTED status for {symbol}/{interval}")
                 await asyncio.sleep(PIPELINE_INACTIVE_SLEEP)
                 continue
 
@@ -123,6 +191,22 @@ async def run_ws_loop():
                     ping_timeout=PING_TIMEOUT,
                 ) as ws:
                     logger.info("[WS] ✅ WebSocket connected")
+                    
+                    # 모든 심볼×인터벌 조합을 CONNECTED 상태로 초기화
+                    for symbol, pair, interval in symbol_intervals:
+                        key = (symbol, interval)
+                        if key not in message_counters:
+                            message_counters[key] = 0
+                        try:
+                            upsert_websocket_progress(
+                                run_id=CURRENT_WS_RUN_ID,
+                                symbol=symbol,
+                                interval=interval,
+                                state="CONNECTED",
+                                message_count=message_counters[key],
+                            )
+                        except Exception:
+                            logger.exception(f"[WS] Failed to update CONNECTED status for {symbol}/{interval}")
 
                     async for msg in ws:
                         # 파이프라인이 중간에 OFF 되면 연결을 정리하고 루프 상단으로 복귀
@@ -172,11 +256,28 @@ async def run_ws_loop():
                             "is_ended": False,
                         }
 
+                        # 메시지 카운터 업데이트 및 진행률 기록
+                        key = (symbol, interval)
+                        message_counters[key] = message_counters.get(key, 0) + 1
+                        
+                        # 100개마다 DB 업데이트 (성능 고려)
+                        if message_counters[key] % 100 == 0:
+                            try:
+                                upsert_websocket_progress(
+                                    run_id=CURRENT_WS_RUN_ID,
+                                    symbol=symbol,
+                                    interval=interval,
+                                    state="CONNECTED",
+                                    message_count=message_counters[key],
+                                )
+                            except Exception:
+                                logger.exception(f"[WS] Failed to update message count for {symbol}/{interval}")
+                        
                         # NOTE:
                         # SyncSessionLocal 을 사용하므로 DB가 느리면 이벤트 루프가 잠깐 막힐 수 있음.
-                        # 심각하게 느려질 경우, 이 부분을 thread executor 로 넘기거나
-                        # 비동기 DB 클라이언트로 바꾸는 것을 고려.
-                        save_realtime_ohlcv(candle, interval)
+                        # 이를 thread executor 로 넘겨서 처리.
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, save_realtime_ohlcv, candle, interval)
 
             except ConnectionClosedError as e:
                 # keepalive ping timeout 등으로 연결이 끊긴 경우 여기로 옴
@@ -185,11 +286,26 @@ async def run_ws_loop():
                     f"reason={getattr(e, 'reason', None)}). "
                     f"재접속 {RECONNECT_DELAY}s 후 시도."
                 )
+                error_msg = f"ConnectionClosedError: code={getattr(e, 'code', None)}, reason={getattr(e, 'reason', None)}"
+                
+                # 모든 연결을 DISCONNECTED로 표시
+                for (symbol, interval), count in message_counters.items():
+                    try:
+                        upsert_websocket_progress(
+                            run_id=CURRENT_WS_RUN_ID,
+                            symbol=symbol,
+                            interval=interval,
+                            state="ERROR",
+                            message_count=count,
+                            last_error=error_msg,
+                        )
+                    except Exception:
+                        logger.exception(f"[WS] Failed to update ERROR status for {symbol}/{interval}")
+                
                 try:
                     set_component_error(
                         PipelineComponent.WEBSOCKET,
-                        f"ConnectionClosedError: code={getattr(e, 'code', None)}, "
-                        f"reason={getattr(e, 'reason', None)}",
+                        error_msg,
                     )
                 except Exception:
                     logger.exception(
