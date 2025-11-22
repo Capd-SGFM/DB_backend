@@ -39,6 +39,8 @@ app.include_router(get_crypto_info.router)
 app.include_router(ohlcv_backfill.router)
 app.include_router(symbols.router)
 app.include_router(pipeline_router)
+from routers.verification import router as verification_router
+app.include_router(verification_router)
 # app.include_router(rest_progress_router)
 
 
