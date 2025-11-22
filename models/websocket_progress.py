@@ -43,3 +43,12 @@ class WebSocketProgress(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+def reset_websocket_progress():
+    """WebSocket 진행률 전체 초기화 (TRUNCATE)"""
+    from db_module.connect_sqlalchemy_engine import SyncSessionLocal
+    from sqlalchemy import text
+
+    with SyncSessionLocal() as session, session.begin():
+        session.execute(text("TRUNCATE TABLE trading_data.websocket_progress"))

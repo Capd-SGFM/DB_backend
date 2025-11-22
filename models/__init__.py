@@ -6,6 +6,7 @@ from .pipeline_state import PipelineState, PipelineComponent
 from .backfill_progress import BackfillProgress
 from .indicator_progress import IndicatorProgress
 from .websocket_progress import WebSocketProgress
+from .error_log import ErrorLogCurrent, ErrorLogHistory
 
 
 from .ohlcv_data import (

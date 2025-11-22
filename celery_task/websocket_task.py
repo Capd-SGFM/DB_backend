@@ -16,6 +16,7 @@ from models.websocket_progress import WebSocketProgress
 from models.pipeline_state import (
     is_pipeline_active,
     set_component_error,
+    log_pipeline_error,
     PipelineComponent,
 )
 
@@ -97,6 +98,10 @@ def websocket_collector():
             set_component_error(
                 PipelineComponent.WEBSOCKET,
                 f"{type(e).__name__}: {e}",
+            )
+            log_pipeline_error(
+                PipelineComponent.WEBSOCKET,
+                f"Fatal error: {type(e).__name__}: {e}",
             )
         except Exception:
             logger.exception("[WS] failed to save fatal last_error")
@@ -313,6 +318,10 @@ async def run_ws_loop():
                         PipelineComponent.WEBSOCKET,
                         error_msg,
                     )
+                    log_pipeline_error(
+                        PipelineComponent.WEBSOCKET,
+                        error_msg,
+                    )
                 except Exception:
                     logger.exception(
                         "[WS] failed to save ConnectionClosedError last_error"
@@ -327,6 +336,10 @@ async def run_ws_loop():
                         PipelineComponent.WEBSOCKET,
                         f"{type(e).__name__}: {e}",
                     )
+                    log_pipeline_error(
+                        PipelineComponent.WEBSOCKET,
+                        f"{type(e).__name__}: {e}",
+                    )
                 except Exception:
                     logger.exception("[WS] failed to save transient last_error")
                 await asyncio.sleep(RECONNECT_DELAY)
@@ -337,6 +350,10 @@ async def run_ws_loop():
             logger.exception(f"[WS] unexpected outer error: {outer_e}")
             try:
                 set_component_error(
+                    PipelineComponent.WEBSOCKET,
+                    f"{type(outer_e).__name__}: {outer_e}",
+                )
+                log_pipeline_error(
                     PipelineComponent.WEBSOCKET,
                     f"{type(outer_e).__name__}: {outer_e}",
                 )
