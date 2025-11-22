@@ -17,12 +17,10 @@ from models.base import Base  # noqa: F401
 app = FastAPI(title="DB backend")
 
 # CORS 설정 (필요에 맞게 수정 가능)
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+import os
+
+# CORS 설정 (필요에 맞게 수정 가능)
+origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
 
 app.add_middleware(
     CORSMiddleware,
