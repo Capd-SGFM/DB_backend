@@ -7,7 +7,7 @@ import uuid
 import httpx
 from celery import group, chain, chord
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.dialects.postgresql import insert
 
 from . import celery_app
@@ -19,6 +19,7 @@ from models import CryptoInfo
 from models.pipeline_state import (
     is_pipeline_active,
     set_component_active,
+    archive_current_errors,
     PipelineComponent,
 )
 from models.backfill_progress import BackfillProgress
@@ -59,14 +60,77 @@ def start_pipeline():
 @celery_app.task(name="pipeline.wait_for_ws_data", bind=True, max_retries=10)
 def wait_for_ws_data(self):
     """
-    WebSocket 데이터가 수집되기 시작할 때까지 대기 (최대 3초)
+    WebSocket 데이터가 모든 심볼/인터벌에 대해 연결될 때까지 대기 (최대 60초)
     """
     if not is_pipeline_active():
         return False
 
-    logger.info("[pipeline] WebSocket 안정화 대기 (3s)...")
-    time.sleep(3) 
-    return True
+    logger.info("[pipeline] 모든 WebSocket 연결 대기 중...")
+
+    # 1. 기대되는 연결 수 계산
+    with SyncSessionLocal() as session:
+        # 활성화된 심볼 수
+        symbol_count = (
+            session.query(func.count(CryptoInfo.symbol))
+            .filter(CryptoInfo.pair.isnot(None))
+            .scalar()
+        )
+    
+    # 인터벌 수 (10개)
+    interval_count = 10  # ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+    total_expected = symbol_count * interval_count
+    
+    logger.info(f"[pipeline] 목표 연결 수: {total_expected} (Symbols={symbol_count}, Intervals={interval_count})")
+
+    # 2. Polling (최대 60초, 2초 간격)
+    max_wait_seconds = 60
+    check_interval = 2
+    elapsed = 0
+    
+    from models.websocket_progress import WebSocketProgress  # 늦은 import로 순환 참조 방지 가능성 대비
+
+    while elapsed < max_wait_seconds:
+        if not is_pipeline_active():
+            return False
+
+        with SyncSessionLocal() as session:
+            # 가장 최근 run_id 찾기 (현재 실행 중인 WS)
+            # (주의: 여러 run_id가 섞여있을 수 있으니 가장 최근에 업데이트된 run_id를 기준으로 함)
+            latest_run_id = (
+                session.query(WebSocketProgress.run_id)
+                .order_by(WebSocketProgress.updated_at.desc())
+                .limit(1)
+                .scalar()
+            )
+            
+            if latest_run_id:
+                # 해당 run_id에서 CONNECTED 상태인 개수 조회
+                connected_count = (
+                    session.query(func.count())
+                    .filter(
+                        WebSocketProgress.run_id == latest_run_id,
+                        WebSocketProgress.state == "CONNECTED"
+                    )
+                    .scalar()
+                )
+            else:
+                connected_count = 0
+
+        if connected_count >= total_expected:
+            logger.info(f"[pipeline] 모든 WebSocket 연결 완료 ({connected_count}/{total_expected}). Backfill 진입.")
+            return True
+        
+        logger.info(f"[pipeline] WebSocket 연결 대기 중... ({connected_count}/{total_expected}) - {elapsed}s")
+        time.sleep(check_interval)
+        elapsed += check_interval
+
+    # 타임아웃 발생
+    logger.error(f"[pipeline] WebSocket 연결 타임아웃 ({max_wait_seconds}s). Backfill을 시작하지 않습니다.")
+    # 여기서 False를 리턴하거나 예외를 던져서 Chain을 중단시켜야 함.
+    # Chain에서 앞의 태스크가 실패(예외)하면 뒤의 태스크는 실행되지 않음.
+    # 하지만 return False로는 Chain이 멈추지 않고 다음 태스크로 넘어감 (인자로 False가 전달됨).
+    # 따라서 예외를 발생시키는 것이 확실함.
+    raise RuntimeError("WebSocket connection timeout")
 
 
 @celery_app.task(name="pipeline.prepare_backfill_and_execute")
@@ -200,6 +264,14 @@ def is_backfill_success(run_id: str) -> bool:
 @celery_app.task(name="pipeline.stop_pipeline")
 def stop_pipeline():
     logger.info("[pipeline] 전체 pipeline OFF")
+
+    # 에러 로그 아카이빙
+    try:
+        archive_current_errors()
+        logger.info("[pipeline] Current error logs archived to history")
+    except Exception as e:
+        logger.error(f"[pipeline] Failed to archive error logs: {e}")
+
     # 각 컴포넌트(Websocket, Maintenance)는 is_pipeline_active()를 체크하여 스스로 종료됨
     return
 

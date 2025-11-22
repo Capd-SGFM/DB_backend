@@ -6,7 +6,7 @@ import pandas as pd
 import pandas_ta as ta
 from celery import Task
 from loguru import logger
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.dialects.postgresql import insert
 
 from db_module.connect_sqlalchemy_engine import SyncSessionLocal
@@ -21,7 +21,8 @@ from . import celery_app
 
 
 # Indicator 유지보수 대상 인터벌(Backfill/REST와 맞춤)
-INTERVALS = ["1h", "4h", "1d", "1w", "1M"]
+# 짧은 인터벌(1m~30m)은 배치 처리로 메모리 절약
+INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 
 
 # =========================================================
@@ -195,6 +196,187 @@ def _get_last_indicator_timestamp(symbol: str, interval: str) -> Optional[dateti
         )
     
     return result[0] if result else None
+
+
+def _process_indicator_in_batches(
+    symbol: str,
+    interval: str,
+    batch_months: int = 3,
+    lookback_count: int = 100
+) -> int:
+    """
+    배치 단위로 보조지표 계산 (메모리 절약)
+    
+    대량의 캔들 데이터를 한 번에 로드하면 OOM이 발생하므로,
+    시간 범위를 여러 배치로 나눠서 처리합니다.
+    
+    Args:
+        symbol: 심볼
+        interval: 인터벌
+        batch_months: 배치 크기 (개월 단위)
+        lookback_count: 각 배치에 포함할 이전 캔들 개수 (연속성 유지용)
+    
+    Returns:
+        저장된 레코드 수
+    """
+    from datetime import timedelta
+    from dateutil.relativedelta import relativedelta
+    
+    OhlcvModel = OHLCV_MODELS.get(interval)
+    IndicatorModel = INDICATOR_MODELS.get(interval)
+    
+    if not OhlcvModel or not IndicatorModel:
+        logger.error(f"[indicator_batch] 지원하지 않는 인터벌: {interval}")
+        return 0
+    
+    # 1. OHLCV 데이터의 시간 범위 조회
+    with SyncSessionLocal() as session:
+        result = session.execute(
+            select(
+                func.min(OhlcvModel.timestamp),
+                func.max(OhlcvModel.timestamp)
+            ).where(
+                OhlcvModel.symbol == symbol,
+                OhlcvModel.is_ended.is_(True)
+            )
+        ).first()
+        
+        if not result or not result[0]:
+            logger.info(f"[indicator_batch] {symbol} {interval}: OHLCV 데이터 없음")
+            return 0
+        
+        min_ts, max_ts = result
+    
+    # 2. 이미 계산된 indicator의 마지막 timestamp 조회
+    last_indicator_ts = _get_last_indicator_timestamp(symbol, interval)
+    
+    if last_indicator_ts:
+        # 증분 계산: 마지막 이후부터 처리
+        start_ts = last_indicator_ts
+        logger.info(
+            f"[indicator_batch] {symbol} {interval}: "
+            f"증분 계산 시작 (마지막={start_ts.isoformat()})"
+        )
+    else:
+        # 최초 계산: 전체 처리
+        start_ts = min_ts
+        logger.info(
+            f"[indicator_batch] {symbol} {interval}: "
+            f"최초 계산 시작 (범위={min_ts.isoformat()} ~ {max_ts.isoformat()})"
+        )
+    
+    # 3. 배치 단위로 처리
+    total_saved = 0
+    current_start = start_ts
+    batch_num = 0
+    
+    while current_start < max_ts:
+        batch_num += 1
+        # 배치 종료 시각 계산 (N개월 후)
+        batch_end = current_start + relativedelta(months=batch_months)
+        if batch_end > max_ts:
+            batch_end = max_ts
+        
+        logger.info(
+            f"[indicator_batch] {symbol} {interval} 배치 #{batch_num}: "
+            f"{current_start.isoformat()} ~ {batch_end.isoformat()}"
+        )
+        
+        # 배치 데이터 + lookback 로드
+        with SyncSessionLocal() as session:
+            # lookback용: current_start 이전 N개
+            stmt_lookback = (
+                select(
+                    OhlcvModel.timestamp,
+                    OhlcvModel.open,
+                    OhlcvModel.high,
+                    OhlcvModel.low,
+                    OhlcvModel.close,
+                    OhlcvModel.volume,
+                )
+                .where(
+                    OhlcvModel.symbol == symbol,
+                    OhlcvModel.is_ended.is_(True),
+                    OhlcvModel.timestamp < current_start,
+                )
+                .order_by(OhlcvModel.timestamp.desc())
+                .limit(lookback_count)
+            )
+            
+            # 실제 배치: current_start ~ batch_end
+            stmt_batch = (
+                select(
+                    OhlcvModel.timestamp,
+                    OhlcvModel.open,
+                    OhlcvModel.high,
+                    OhlcvModel.low,
+                    OhlcvModel.close,
+                    OhlcvModel.volume,
+                )
+                .where(
+                    OhlcvModel.symbol == symbol,
+                    OhlcvModel.is_ended.is_(True),
+                    OhlcvModel.timestamp >= current_start,
+                    OhlcvModel.timestamp < batch_end,
+                )
+                .order_by(OhlcvModel.timestamp.asc())
+            )
+            
+            rows_lookback = session.execute(stmt_lookback).all()
+            rows_batch = session.execute(stmt_batch).all()
+        
+        if not rows_batch:
+            logger.info(f"[indicator_batch] 배치 #{batch_num}: 데이터 없음, 종료")
+            break
+        
+        # lookback 역순 정렬 + batch 합치기
+        rows_combined = list(reversed(rows_lookback)) + list(rows_batch)
+        
+        df = pd.DataFrame(
+            [
+                {
+                    "timestamp": r[0],
+                    "open": float(r[1]),
+                    "high": float(r[2]),
+                    "low": float(r[3]),
+                    "close": float(r[4]),
+                    "volume": float(r[5]),
+                }
+                for r in rows_combined
+            ]
+        )
+        df = df.set_index("timestamp")
+        
+        # 보조지표 계산
+        df_ind = _compute_indicators(df)
+        
+        if df_ind.empty:
+            logger.warning(f"[indicator_batch] 배치 #{batch_num}: 지표 계산 결과 없음")
+            current_start = batch_end
+            continue
+        
+        # lookback 제외하고 current_start 이후만 저장
+        df_to_save = df_ind[df_ind.index >= current_start]
+        
+        if df_to_save.empty:
+            logger.info(f"[indicator_batch] 배치 #{batch_num}: 저장할 데이터 없음")
+        else:
+            saved = _upsert_indicators(symbol, interval, df_to_save, only_last=False)
+            total_saved += saved
+            logger.info(
+                f"[indicator_batch] 배치 #{batch_num}: {saved}개 저장 "
+                f"(누적={total_saved})"
+            )
+        
+        # 다음 배치로 이동
+        current_start = batch_end
+    
+    logger.info(
+        f"[indicator_batch] {symbol} {interval}: "
+        f"배치 처리 완료 (총 {batch_num}개 배치, {total_saved}개 저장)"
+    )
+    return total_saved
+
 
 
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -585,6 +767,45 @@ def run_indicator_maintenance() -> dict:
         for interval in INTERVALS:
             total += 1
             try:
+                # 짧은 인터벌은 배치 처리 사용 (메모리 절약)
+                if interval in ("1m", "3m", "5m", "15m", "30m"):
+                    # 배치 크기 결정
+                    if interval == "1m":
+                        batch_months = 1  # 1개월 (~43,000 캔들)
+                    elif interval == "3m":
+                        batch_months = 2  # 2개월 (~28,000 캔들)
+                    else:
+                        batch_months = 3  # 3개월 (~12,000~18,000 캔들)
+                    
+                    # 작업 시작
+                    upsert_indicator_progress(
+                        run_id, sym, interval, "PROGRESS", 0.0, None, None
+                    )
+                    
+                    # 배치 처리 실행
+                    saved_count = _process_indicator_in_batches(
+                        sym, interval, batch_months=batch_months
+                    )
+                    
+                    if saved_count > 0:
+                        # 성공: 최신 timestamp 조회
+                        last_ts = _get_last_indicator_timestamp(sym, interval)
+                        upsert_indicator_progress(
+                            run_id, sym, interval, "SUCCESS", 100.0, last_ts, None
+                        )
+                        success += 1
+                        logger.info(
+                            f"[Indicator] {sym} {interval}: 배치 처리 완료 ({saved_count}개)"
+                        )
+                    else:
+                        # 데이터 없음
+                        upsert_indicator_progress(
+                            run_id, sym, interval, "SUCCESS", 100.0, None, None
+                        )
+                        success += 1
+                    continue
+                
+                # 긴 인터벌은 기존 증분 계산 사용
                 # 증분 계산: 마지막으로 계산된 timestamp 조회
                 last_indicator_ts = _get_last_indicator_timestamp(sym, interval)
                 

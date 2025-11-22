@@ -241,6 +241,12 @@ def run_rest_maintenance():
                 start_ms = int(start_ts.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
                 # end = "현재 WS 캔들 바로 이전" → ws_current_ms - 1ms
+                # 사용자 요구사항: "is_ended = FALSE인 데이터 중 가장 최신인 데이터 캔들 - 1 인터벌까지"
+                # ws_current_ts가 가장 최신 FALSE 캔들이므로,
+                # ws_current_ms - 1ms를 end_ms로 잡으면,
+                # fetch_klines_range(open_time <= end_ms) 로직에 의해
+                # 정확히 "최신 FALSE 캔들 바로 직전 캔들"까지만 포함됨.
+                # (즉, 최신 FALSE 캔들 자체는 포함되지 않음)
                 ws_current_ms = int(
                     ws_current_ts.replace(tzinfo=timezone.utc).timestamp() * 1000
                 )

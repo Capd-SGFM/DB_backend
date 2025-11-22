@@ -4,17 +4,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import IntEnum
 
-from sqlalchemy import Boolean, Integer, TIMESTAMP, text, String, Text
+from sqlalchemy import Integer, Boolean, String, Text, TIMESTAMP, text, select, insert, delete
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
 from db_module.connect_sqlalchemy_engine import SyncSessionLocal
-
+from models.error_log import ErrorLogCurrent, ErrorLogHistory
 
 class PipelineComponent(IntEnum):
     """
-    pipeline_state.id 에 대응되는 컴포넌트 정의
-
     1 : 전체 파이프라인 on/off
     2 : WebSocket 실시간 수집 on/off
     3 : Backfill 엔진 on/off
@@ -194,3 +192,57 @@ def set_current_backfill_run_id(run_id: str | None) -> None:
             obj.current_backfill_run_id = run_id
             obj.updated_at = now
         session.commit()
+
+
+def log_pipeline_error(
+    component: PipelineComponent | str,
+    error_message: str,
+    symbol: str | None = None,
+    interval: str | None = None,
+) -> None:
+    """
+    현재 에러 로그 테이블(error_logs_current)에 에러 추가.
+    """
+    if not error_message:
+        return
+
+    comp_str = (
+        component.name if isinstance(component, PipelineComponent) else str(component)
+    )
+
+    with SyncSessionLocal() as session, session.begin():
+        stmt = insert(ErrorLogCurrent).values(
+            component=comp_str,
+            symbol=symbol,
+            interval=interval,
+            error_message=error_message,
+        )
+        session.execute(stmt)
+
+
+def archive_current_errors() -> None:
+    """
+    파이프라인 OFF 시 호출.
+    Current 테이블의 내용을 History 테이블로 이동하고 Current를 비움.
+    """
+    with SyncSessionLocal() as session, session.begin():
+        # 1. Current 조회
+        rows = session.execute(select(ErrorLogCurrent)).scalars().all()
+        if not rows:
+            return
+
+        # 2. History에 삽입
+        history_data = [
+            {
+                "component": row.component,
+                "symbol": row.symbol,
+                "interval": row.interval,
+                "error_message": row.error_message,
+                "occurred_at": row.occurred_at,
+            }
+            for row in rows
+        ]
+        session.execute(insert(ErrorLogHistory).values(history_data))
+
+        # 3. Current 삭제
+        session.execute(delete(ErrorLogCurrent))

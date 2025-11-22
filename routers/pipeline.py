@@ -16,7 +16,9 @@ from sqlalchemy import select, desc
 # 🔹 REST / Indicator 진행현황용 모델
 from models.rest_progress import RestProgress
 from models.indicator_progress import IndicatorProgress
-from models.websocket_progress import WebSocketProgress
+from models.websocket_progress import WebSocketProgress, reset_websocket_progress
+from models.error_log import ErrorLogCurrent
+from celery_task.indicator_task import run_indicator_maintenance
 
 router = APIRouter(prefix="/pipeline", tags=["Pipeline"])
 
@@ -167,6 +169,12 @@ async def activate_pipeline():
     except Exception:
         logger.exception("[Pipeline] failed to reset backfill_progress")
 
+    try:
+        reset_websocket_progress()
+        logger.info("[Pipeline] reset websocket_progress table")
+    except Exception:
+        logger.exception("[Pipeline] failed to reset websocket_progress")
+
     set_pipeline_active(True)
 
     start_pipeline.delay()
@@ -207,6 +215,67 @@ async def deactivate_pipeline():
 # ==================================================
 
 
+def _map_websocket_status(is_pipeline_on: bool, comp: dict) -> EngineStatusModel:
+    comp_id = int(comp.get("id"))
+    is_active = bool(comp.get("is_active", False))
+    last_error = comp.get("last_error")
+    updated_at = comp.get("updated_at")
+
+    if not is_pipeline_on:
+        return EngineStatusModel(
+            id=comp_id,
+            is_active=False,
+            status="WAIT",
+            last_error=last_error,
+            updated_at=updated_at,
+        )
+
+    # WebSocketProgress 전체 상태 확인
+    # WebSocketProgress 전체 상태 확인
+    with SyncSessionLocal() as session:
+        # 1. 최신 run_id 조회
+        latest_run_id = session.execute(
+            select(WebSocketProgress.run_id)
+            .order_by(desc(WebSocketProgress.updated_at))
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if not latest_run_id:
+            final_status = "WAIT"
+        else:
+            # 2. 최신 run_id에 해당하는 row들의 state 조회
+            rows = (
+                session.execute(
+                    select(WebSocketProgress.state).where(
+                        WebSocketProgress.run_id == latest_run_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            if not rows:
+                final_status = "WAIT"
+            elif any(s in ("ERROR", "DISCONNECTED", "FAIL", "FAILURE") for s in rows):
+                final_status = "FAIL"
+            elif all(s == "CONNECTED" for s in rows):
+                final_status = "PROGRESS"
+            else:
+                final_status = "PROGRESS"
+
+    # 상태가 PROGRESS(정상)이면, 과거의 last_error가 남아있더라도 UI에는 표시하지 않음
+    if final_status == "PROGRESS":
+        last_error = None
+
+    return EngineStatusModel(
+        id=comp_id,
+        is_active=is_active,
+        status=final_status,
+        last_error=last_error,
+        updated_at=updated_at,
+    )
+
+
 @router.get("/status", response_model=PipelineStatusResponse)
 async def get_pipeline_status():
     states = get_all_pipeline_states()
@@ -217,7 +286,7 @@ async def get_pipeline_status():
     rm = states.get("rest_maintenance", {"id": 4, "is_active": False})
     ind = states.get("indicator", {"id": 5, "is_active": False})
 
-    websocket_status = _map_engine_status(is_on, ws)
+    websocket_status = _map_websocket_status(is_on, ws)
     backfill_status = _map_backfill_status(is_on, bf)  # ★ Backfill 전용 로직
     rest_status = _map_engine_status(is_on, rm)
     indicator_status = _map_engine_status(is_on, ind)
@@ -494,4 +563,49 @@ async def get_websocket_progress():
         )
 
     return WebSocketProgressResponse(run_id=run_id, symbols=symbols)
+
+
+@router.get("/errors/current")
+def get_current_errors():
+    with SyncSessionLocal() as session:
+        rows = (
+            session.query(ErrorLogCurrent)
+            .order_by(ErrorLogCurrent.occurred_at.desc())
+            .all()
+        )
+        return [
+            {
+                "id": row.id,
+                "component": row.component,
+                "symbol": row.symbol,
+                "interval": row.interval,
+                "error_message": row.error_message,
+                "occurred_at": row.occurred_at,
+            }
+            for row in rows
+        ]
+
+
+@router.post("/indicator/trigger")
+async def trigger_indicator_calculation():
+    """
+    보조지표 계산을 수동으로 트리거합니다.
+    Backfill 완료 여부와 상관없이 실행됩니다.
+    """
+    if not is_pipeline_active():
+        return {"status": "error", "message": "파이프라인이 비활성 상태입니다"}
+    
+    try:
+        # 백그라운드에서 비동기 실행
+        from celery_task import celery_app
+        celery_app.send_task("indicator.run_indicator_maintenance")
+        
+        logger.info("[API] 수동 Indicator 계산 트리거됨")
+        return {
+            "status": "success",
+            "message": "보조지표 계산이 시작되었습니다. 진행 상황은 보조지표 진행현황 모달에서 확인하세요."
+        }
+    except Exception as e:
+        logger.error(f"[API] Indicator 트리거 실패: {e}")
+        return {"status": "error", "message": f"트리거 실패: {str(e)}"}
 

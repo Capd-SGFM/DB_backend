@@ -341,7 +341,30 @@ def backfill_symbol_interval(
             "saved": total_saved,
         }
 
+    except httpx.ConnectError as e:
+        # 네트워크 연결 오류: 재시도 (최대 5번, 지수 백오프)
+        logger.warning(
+            f"[Backfill] {symbol} {interval}: Connection error, retrying... "
+            f"(attempt {self.request.retries + 1}/5)"
+        )
+        upsert_backfill_progress(
+            run_id, symbol, interval, "PENDING", 0, None, f"Connection error (retrying...)"
+        )
+        raise self.retry(exc=e, countdown=2 ** self.request.retries, max_retries=5)
+    
+    except httpx.TimeoutError as e:
+        # 타임아웃 오류: 재시도 (최대 3번)
+        logger.warning(
+            f"[Backfill] {symbol} {interval}: Timeout error, retrying... "
+            f"(attempt {self.request.retries + 1}/3)"
+        )
+        upsert_backfill_progress(
+            run_id, symbol, interval, "PENDING", 0, None, f"Timeout (retrying...)"
+        )
+        raise self.retry(exc=e, countdown=5, max_retries=3)
+    
     except Exception as e:
+        # 기타 오류: 바로 실패 처리 (재시도 안 함)
         logger.exception(e)
         set_component_error(PipelineComponent.BACKFILL, str(e))
         upsert_backfill_progress(run_id, symbol, interval, "FAILURE", 0, None, str(e))
