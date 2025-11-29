@@ -36,10 +36,11 @@ class DBConnectionManager:
         if cls._sync_engine is None:
             cls._sync_engine = create_engine(
                 SYNC_URL,
-                pool_pre_ping=True,
-                pool_size=5,
-                max_overflow=10,
-                pool_recycle=1800,
+                pool_pre_ping=True,      # Connection health check
+                pool_size=20,             # 🚀 Optimized: Base pool size
+                max_overflow=40,          # 🚀 Optimized: Max extra connections
+                pool_recycle=1800,        # Recycle connections every 30 min
+                echo=False,               # Disable SQL logging for performance
             )
         return cls._sync_engine
 

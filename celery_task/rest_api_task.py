@@ -141,33 +141,110 @@ def get_start_time_ms(symbol, interval, OhlcvModel, ws_frontier_ms):
 #  OHLCV 저장 (🔥 반드시 commit 보장됨)
 # ================================================================
 def save_data(OhlcvModel, symbol, rows):
+    """Ultra-fast save using PostgreSQL COPY (TimescaleDB optimized)"""
     if not rows:
         return 0
 
-    df = pd.DataFrame(rows)
-    df["timestamp"] = pd.to_datetime(df["open_time_ms"], unit="ms", utc=True)
-    recs = df[
-        ["symbol", "timestamp", "open", "high", "low", "close", "volume", "is_ended"]
-    ].to_dict("records")
+    logger.info(f"Saving into table={OhlcvModel.__tablename__}, rows={len(rows)} using COPY")
 
-    logger.info(f"Saving into table={OhlcvModel.__tablename__}, rows={len(recs)}")
-
-    # 🔥 commit 보장
-    with SyncSessionLocal() as session, session.begin():
-        stmt = insert(OhlcvModel).values(recs)
-        update_cols = {
-            k: getattr(stmt.excluded, k)
-            for k in recs[0].keys()
-            if k not in ["symbol", "timestamp"]
-        }
-
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "timestamp"],
-            set_=update_cols,
-        )
-        session.execute(stmt)
-
-    return len(recs)
+    try:
+        # Prepare data for COPY
+        from io import StringIO
+        
+        # Create CSV buffer
+        buffer = StringIO()
+        for row in rows:
+            ts = datetime.fromtimestamp(row["open_time_ms"] / 1000, tz=timezone.utc)
+            # Format: symbol, timestamp, open, high, low, close, volume, is_ended
+            line = f"{row['symbol']}\t{ts.isoformat()}\t{row['open']}\t{row['high']}\t{row['low']}\t{row['close']}\t{row['volume']}\t{row['is_ended']}\n"
+            buffer.write(line)
+        
+        buffer.seek(0)
+        
+        # Use temporary table for ON CONFLICT handling
+        temp_table = f"temp_{OhlcvModel.__tablename__}_{int(time.time() * 1000)}"
+        # 🔧 Fix: Include schema name for table reference
+        full_table_name = f"trading_data.{OhlcvModel.__tablename__}"
+        
+        with SyncSessionLocal() as session:
+            connection = session.connection().connection
+            cursor = connection.cursor()
+            
+            try:
+                # Create temporary table with same structure
+                cursor.execute(f"""
+                    CREATE TEMPORARY TABLE {temp_table} (LIKE {full_table_name} INCLUDING ALL)
+                    ON COMMIT DROP
+                """)
+                
+                # 🚀 Ultra-fast COPY into temp table
+                cursor.copy_from(
+                    buffer,
+                    temp_table,
+                    columns=['symbol', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'is_ended'],
+                    sep='\t'
+                )
+                
+                # Insert from temp table with ON CONFLICT handling
+                cursor.execute(f"""
+                    INSERT INTO {full_table_name} 
+                    (symbol, timestamp, open, high, low, close, volume, is_ended)
+                    SELECT symbol, timestamp, open, high, low, close, volume, is_ended
+                    FROM {temp_table}
+                    ON CONFLICT (symbol, timestamp) 
+                    DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume,
+                        is_ended = EXCLUDED.is_ended
+                """)
+                
+                connection.commit()
+                logger.info(f"✅ COPY successful: {len(rows)} rows")
+                
+            except Exception as e:
+                connection.rollback()
+                logger.error(f"❌ COPY failed: {e}, falling back to INSERT")
+                raise
+            finally:
+                cursor.close()
+        
+        return len(rows)
+        
+    except Exception as e:
+        # Fallback to original INSERT method on any error
+        logger.warning(f"COPY failed, using INSERT fallback: {e}")
+        
+        recs = []
+        for row in rows:
+            recs.append({
+                "symbol": row["symbol"],
+                "timestamp": datetime.fromtimestamp(row["open_time_ms"] / 1000, tz=timezone.utc),
+                "open": row["open"],
+                "high": row["high"],
+                "low": row["low"],
+                "close": row["close"],
+                "volume": row["volume"],
+                "is_ended": row["is_ended"],
+            })
+        
+        with SyncSessionLocal() as session, session.begin():
+            stmt = insert(OhlcvModel).values(recs)
+            update_cols = {
+                k: getattr(stmt.excluded, k)
+                for k in recs[0].keys()
+                if k not in ["symbol", "timestamp"]
+            }
+            
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol", "timestamp"],
+                set_=update_cols,
+            )
+            session.execute(stmt)
+        
+        return len(rows)
 
 
 # ================================================================
@@ -274,7 +351,38 @@ def backfill_symbol_interval(
                         "limit": KLINE_LIMIT,
                     },
                 )
+                
+                # 🚀 Rate Limit Handling
+                if r.status_code == 429:
+                    logger.warning(f"[Backfill] {symbol} {interval}: 429 Too Many Requests. Retrying...")
+                    time.sleep(5)  # Cool down
+                    raise self.retry(countdown=10, max_retries=20)
+                
+                r.raise_for_status()
                 arr = r.json()
+                
+                # 🚀 Dynamic Rate Limiting (Smart Throttling)
+                # Binance Limit: 2400 weight / minute
+                try:
+                    used_weight = int(r.headers.get("x-mbx-used-weight-1m", 0))
+                    limit_weight = 2400
+                    
+                    if used_weight > (limit_weight * 0.95):
+                        # > 95% usage: Danger zone, sleep long
+                        logger.warning(f"[Backfill] Rate limit critical: {used_weight}/{limit_weight}. Sleeping 10s...")
+                        time.sleep(10)
+                    elif used_weight > (limit_weight * 0.80):
+                        # > 80% usage: Throttle down
+                        logger.info(f"[Backfill] Rate limit high: {used_weight}/{limit_weight}. Sleeping 3s...")
+                        time.sleep(3)
+                    else:
+                        # < 80% usage: Full speed (minimal delay)
+                        time.sleep(0.1)
+                        
+                except Exception:
+                    # Header parsing failed, fallback to safe default
+                    time.sleep(0.5)
+
                 if not arr:
                     break
 
@@ -304,26 +412,29 @@ def backfill_symbol_interval(
                 if new_count == 0:
                     break
 
-                pct = min(
-                    round(
-                        (last_open - progress_start)
-                        / (progress_end - progress_start)
-                        * 100,
-                        2,
-                    ),
-                    100.0,
-                )
-                upsert_backfill_progress(
-                    run_id,
-                    symbol,
-                    interval,
-                    "PROGRESS",
-                    pct,
-                    datetime.fromtimestamp(last_open / 1000, tz=timezone.utc),
-                    None,
-                )
+                # 🚀 Optimized: Update progress every 10,000 rows instead of 1,000
+                if len(buffer) % 10_000 == 0 and len(buffer) > 0:
+                    pct = min(
+                        round(
+                            (last_open - progress_start)
+                            / (progress_end - progress_start)
+                            * 100,
+                            2,
+                        ),
+                        100.0,
+                    )
+                    upsert_backfill_progress(
+                        run_id,
+                        symbol,
+                        interval,
+                        "PROGRESS",
+                        pct,
+                        datetime.fromtimestamp(last_open / 1000, tz=timezone.utc),
+                        None,
+                    )
 
-                if len(buffer) >= 50_000:
+                # 🚀 Optimized: Larger buffer for better bulk insert performance
+                if len(buffer) >= 100_000:
                     total_saved += save_data(OhlcvModel, symbol, buffer)
                     buffer.clear()
 
@@ -352,7 +463,8 @@ def backfill_symbol_interval(
         )
         raise self.retry(exc=e, countdown=2 ** self.request.retries, max_retries=5)
     
-    except httpx.TimeoutError as e:
+    
+    except httpx.TimeoutException as e:
         # 타임아웃 오류: 재시도 (최대 3번)
         logger.warning(
             f"[Backfill] {symbol} {interval}: Timeout error, retrying... "

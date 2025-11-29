@@ -1,6 +1,7 @@
 # models/__init__.py
 from .base import Base
 from .crypto_info import CryptoInfo
+from .symbol_trading_rules import SymbolTradingRules
 from .users import User
 from .pipeline_state import PipelineState, PipelineComponent
 from .backfill_progress import BackfillProgress

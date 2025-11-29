@@ -8,7 +8,7 @@ import pandas as pd
 import httpx
 
 from db_module.connect_sqlalchemy_engine import get_async_db
-from models import CryptoInfo
+from models import CryptoInfo, SymbolTradingRules
 
 router = APIRouter(prefix="/get_symbol_info", tags=["get_symbol_info"])
 
@@ -114,7 +114,9 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
         logger.success("Binance API 데이터 로드 완료.")
 
         # 3. 데이터 필터링
-        data_to_upsert = []  # [이름 변경] data_to_update -> data_to_upsert
+        crypto_info_upsert = []
+        trading_rules_upsert = []
+        
         api_symbols = api_data.get("symbols", [])
 
         if not api_symbols:
@@ -138,10 +140,16 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
 
             filters_data = parse_filters(item.get("filters", []))
 
-            # DB에 들어갈 완전한 행을 준비
-            row = {
+            # 1) metadata.crypto_info 데이터 준비
+            row_info = {
                 "symbol": base_asset,
                 "pair": item.get("symbol"),
+            }
+            crypto_info_upsert.append(row_info)
+
+            # 2) futures.symbol_trading_rules 데이터 준비
+            row_rules = {
+                "symbol": base_asset,
                 "price_precision": item.get("pricePrecision"),
                 "quantity_precision": item.get("quantityPrecision"),
                 "required_margin_percent": item.get("requiredMarginPercent"),
@@ -149,38 +157,45 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
                 "liquidation_fee": item.get("liquidationFee"),
                 **filters_data,
             }
-            data_to_upsert.append(row)
+            trading_rules_upsert.append(row_rules)
 
-        if not data_to_upsert:
+        if not crypto_info_upsert:
             msg = "API에서 CSV와 일치하는 심볼 정보를 찾지 못했습니다."
             logger.warning(msg)
             return {"message": msg, "upserted_count": 0}
 
         logger.info(
-            f"DB에 {len(data_to_upsert)}개 심볼 UPSERT (Insert or Update) 시도..."
+            f"DB에 {len(crypto_info_upsert)}개 심볼 UPSERT (Insert or Update) 시도..."
         )
 
-        # 4. INSERT ... ON CONFLICT DO UPDATE 구문 생성
-        stmt = insert(CryptoInfo).values(data_to_upsert)
-
-        # data_to_upsert의 딕셔너리에 있는 모든 키를 가져옴
-        keys_to_update = data_to_upsert[0].keys()
-
-        update_cols = {
-            key: getattr(stmt.excluded, key)
-            for key in keys_to_update
-            if key != "symbol"  # PK ('symbol') 제외
+        # 4. UPSERT 실행 (1): metadata.crypto_info
+        # 먼저 부모 테이블인 crypto_info를 업데이트해야 함
+        stmt_info = insert(CryptoInfo).values(crypto_info_upsert)
+        update_cols_info = {
+            key: getattr(stmt_info.excluded, key)
+            for key in crypto_info_upsert[0].keys()
+            if key != "symbol"
         }
-
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol"],  # 충돌 기준 컬럼 (PK)
-            set_=update_cols,  # 업데이트할 내용
+        stmt_info = stmt_info.on_conflict_do_update(
+            index_elements=["symbol"],
+            set_=update_cols_info,
         )
+        await db.execute(stmt_info)
 
-        # 6. DB 실행
-        result = await db.execute(stmt)
+        # 5. UPSERT 실행 (2): futures.symbol_trading_rules
+        stmt_rules = insert(SymbolTradingRules).values(trading_rules_upsert)
+        update_cols_rules = {
+            key: getattr(stmt_rules.excluded, key)
+            for key in trading_rules_upsert[0].keys()
+            if key != "symbol"
+        }
+        stmt_rules = stmt_rules.on_conflict_do_update(
+            index_elements=["symbol"],
+            set_=update_cols_rules,
+        )
+        result = await db.execute(stmt_rules)
 
-        # 7. 커밋
+        # 6. 커밋
         await db.commit()
 
         # result.rowcount는 UPSERT로 인해 영향을 받은 총 행의 수를 반환
@@ -191,7 +206,7 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
         return {
             "message": msg,
             "upserted_count": upserted_count,
-            "csv_symbols_found": len(data_to_upsert),
+            "csv_symbols_found": len(crypto_info_upsert),
         }
 
     except HTTPException:

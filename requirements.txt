@@ -18,4 +18,4 @@ celery
 redis
 aiohttp
 aiolimiter
-pandas-ta
+numba
