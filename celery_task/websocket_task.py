@@ -73,7 +73,7 @@ def upsert_websocket_progress(
         session.execute(stmt)
 
 
-@celery_app.task(name="ohlcv.websocket_collector")
+@celery_app.task(name="ohlcv.websocket_collector", queue="websocket")
 def websocket_collector():
     """
     파이프라인이 is_active = TRUE 인 동안만

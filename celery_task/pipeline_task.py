@@ -24,7 +24,13 @@ from models.pipeline_state import (
 )
 from models.backfill_progress import BackfillProgress
 from celery_task.rest_maintenance_task import run_rest_maintenance
-from celery_task.indicator_task import run_indicator_maintenance
+from models.backfill_progress import BackfillProgress
+from celery_task.rest_maintenance_task import run_rest_maintenance
+from celery_task.indicator_task import (
+    run_indicator_maintenance, 
+    purge_indicators_queue, 
+    stop_all_indicator_tasks
+)
 
 __all__ = ["start_pipeline", "stop_pipeline", "run_maintenance_cycle"]
 
@@ -135,7 +141,9 @@ def wait_for_ws_data(self):
 
 @celery_app.task(name="pipeline.prepare_backfill_and_execute")
 def prepare_backfill_and_execute(prev_result):
+    logger.info(f"[pipeline] prepare_backfill_and_execute called with prev_result={prev_result}")
     if not is_pipeline_active():
+        logger.info("[pipeline] Pipeline inactive, skipping backfill preparation")
         return
 
     # -----------------------------
@@ -272,6 +280,13 @@ def stop_pipeline():
     except Exception as e:
         logger.error(f"[pipeline] Failed to archive error logs: {e}")
 
+    # 🚀 Emergency Stop Logic
+    # 1. Purge 'indicators' queue
+    purge_indicators_queue()
+    
+    # 2. Terminate running indicator tasks
+    stop_all_indicator_tasks()
+
     # 각 컴포넌트(Websocket, Maintenance)는 is_pipeline_active()를 체크하여 스스로 종료됨
     return
 
@@ -341,14 +356,36 @@ def run_indicator_maintenance_wrapper(prev_result):
     logger.info("[pipeline] Indicator 계산 시작")
     
     try:
-        result = run_indicator_maintenance() # 직접 호출
+        tasks = run_indicator_maintenance() # 태스크 리스트 반환
+        
+        if not tasks:
+            logger.info("[pipeline] 실행할 Indicator 태스크가 없습니다.")
+            set_component_active(PipelineComponent.INDICATOR, False)
+            return {"status": "NO_TASKS"}
+            
+        # Chord 실행: tasks -> on_indicator_complete
+        # 주의: run_indicator_maintenance_wrapper는 여기서 종료되지만, 
+        # 상태(Active)는 on_indicator_complete에서 꺼야 함.
+        
+        callback = on_indicator_complete.s()
+        chord(tasks)(callback)
+        
+        logger.info(f"[pipeline] Indicator chord started ({len(tasks)} tasks)")
+        return {"status": "STARTED", "task_count": len(tasks)}
+
     except Exception as e:
         logger.error(f"[pipeline] Indicator maintenance error: {e}")
-        result = {"status": "FAILURE"}
+        set_component_active(PipelineComponent.INDICATOR, False)
+        return {"status": "FAILURE"}
 
+
+@celery_app.task(name="pipeline.on_indicator_complete")
+def on_indicator_complete(results):
+    """
+    Indicator 계산 완료 후 호출
+    """
+    logger.info("[pipeline] Indicator 계산 완료 (All tasks finished)")
     set_component_active(PipelineComponent.INDICATOR, False)
-    logger.info("[pipeline] Indicator 계산 완료")
-    return result
 
 
 @celery_app.task(name="pipeline.schedule_next_maintenance")
