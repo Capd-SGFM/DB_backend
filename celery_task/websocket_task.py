@@ -2,6 +2,7 @@
 import asyncio
 import json
 import uuid
+import redis
 from datetime import datetime, timezone
 
 import websockets
@@ -374,6 +375,19 @@ def save_realtime_ohlcv(candle: dict, interval: str):
     if not OhlcvModel:
         # 정의되지 않은 interval 은 무시
         return
+
+    # Redis Publish (Fire and Forget)
+    try:
+        redis_client = redis.Redis.from_url("redis://redis:6379/0")
+        message = json.dumps({
+            "type": "ticker",
+            "symbol": candle["symbol"],
+            "price": candle["close"],
+            "timestamp": candle["timestamp"].isoformat()
+        })
+        redis_client.publish("market_data", message)
+    except Exception as e:
+        logger.error(f"[WS] Failed to publish to Redis: {e}")
 
     with SyncSessionLocal() as session, session.begin():
         stmt = insert(OhlcvModel).values(**candle)
