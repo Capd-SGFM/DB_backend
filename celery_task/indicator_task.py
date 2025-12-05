@@ -550,7 +550,7 @@ def _bulk_upsert_indicators_via_copy(
     # 1. Prepare Data
     df_reset = df_ind.reset_index()
     
-    # 필요한 컬럼만 추출 및 순서 보장
+    # 필요한 컬럼만 추출 및 순서 보장 (symbol 포함)
     columns = [
         "symbol", "timestamp", 
         "rsi_14", "ema_7", "ema_21", "ema_99", 
@@ -571,17 +571,17 @@ def _bulk_upsert_indicators_via_copy(
     import random
 
     CHUNK_SIZE = 2000 # Reduced from 10000 to 2000 to minimize lock contention
-    total_rows = len(df_ind)
+    total_rows = len(df_reset)
     saved_count = 0
     
     # If data is small, just do it once
     if total_rows <= CHUNK_SIZE:
-        chunks = [df_ind]
+        chunks = [df_reset]
     else:
-        chunks = [df_ind[i:i + CHUNK_SIZE] for i in range(0, total_rows, CHUNK_SIZE)]
+        chunks = [df_reset[i:i + CHUNK_SIZE] for i in range(0, total_rows, CHUNK_SIZE)]
         logger.info(f"[indicator.copy] Splitting {total_rows} rows into {len(chunks)} chunks for {symbol} {interval}")
 
-    columns = ['timestamp', 'rsi_14', 'ema_7', 'ema_21', 'ema_99', 'macd', 'macd_signal', 'macd_hist', 'bb_upper', 'bb_middle', 'bb_lower', 'volume_20']
+    # columns는 위에서 정의한 것을 그대로 사용 (symbol 포함)
     cols_str = ", ".join(columns)
     update_set = ", ".join([
         f"{col} = EXCLUDED.{col}" 
@@ -594,27 +594,29 @@ def _bulk_upsert_indicators_via_copy(
     full_table_name = f"{schema_name}.{table_name}"
 
     with SyncSessionLocal() as session:
-        connection = session.connection()
-        dbapi_conn = connection.connection
+        # connection = session.connection() # Don't get it here
+        # dbapi_conn = connection.connection # Don't get it here
         
         try:
             for i, chunk in enumerate(chunks):
                 retries = 3
                 while retries > 0:
+                    # Ensure connection is active and get raw connection for EACH retry/iteration
+                    # session.connection() ensures a transaction is active and connection is checked out
+                    dbapi_conn = session.connection().connection
                     cursor = dbapi_conn.cursor()
                     try:
-                        # Temp table per chunk (or reuse? reuse is better but need to truncate)
-                        # Let's create a fresh temp table for simplicity and safety against previous failures
+                        # Temp table per chunk
                         temp_table_name = f"temp_{table_name}_{uuid.uuid4().hex[:8]}".lower()
                         
-                        # Reset index so timestamp becomes a column
-                        chunk_reset = chunk.reset_index()
+                        # chunk는 이미 df_reset의 slice이므로 symbol, timestamp 컬럼이 존재함.
+                        # to_csv 호출 시 index=False로 설정해야 함 (timestamp가 컬럼으로 존재하므로)
                         
                         csv_buffer = io.StringIO()
-                        chunk_reset.to_csv(
+                        chunk.to_csv(
                             csv_buffer,
                             sep='\t',
-                            index=False, # timestamp is now a column
+                            index=False, 
                             header=False,
                             date_format='%Y-%m-%d %H:%M:%S',
                             columns=columns,
@@ -649,11 +651,10 @@ def _bulk_upsert_indicators_via_copy(
                         cursor.execute(query)
                         saved_count += cursor.rowcount
                         
-                        # Drop temp table explicitly to free resources immediately
+                        # Drop temp table explicitly
                         cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
                         
-                        # Commit every chunk to release locks? 
-                        # Yes, committing releases locks, reducing deadlock chance.
+                        # Commit every chunk
                         session.commit()
                         
                         # Success, break retry loop
@@ -681,101 +682,7 @@ def _bulk_upsert_indicators_via_copy(
             return saved_count
             
         except Exception as e:
-            # Outer exception handler (if retries exhausted or other error)
-            # session.rollback() # Already handled inside
             raise
-
-    # 🚀 Refactored Chunked Implementation
-    # Instead of one giant COPY, we split the dataframe and perform multiple COPY -> INSERT cycles.
-    
-    CHUNK_SIZE = 10000 # Adjust based on performance/deadlock frequency
-    total_rows = len(df_to_save)
-    saved_count = 0
-    
-    # If data is small, just do it once
-    if total_rows <= CHUNK_SIZE:
-        chunks = [df_to_save]
-    else:
-        chunks = [df_to_save[i:i + CHUNK_SIZE] for i in range(0, total_rows, CHUNK_SIZE)]
-        logger.info(f"[indicator.copy] Splitting {total_rows} rows into {len(chunks)} chunks for {symbol} {interval}")
-
-    columns = ['timestamp', 'rsi_14', 'ema_7', 'ema_21', 'ema_99', 'macd', 'macd_signal', 'macd_hist', 'bb_upper', 'bb_middle', 'bb_lower', 'volume_20']
-    cols_str = ", ".join(columns)
-    update_set = ", ".join([
-        f"{col} = EXCLUDED.{col}" 
-        for col in columns 
-        if col not in ("symbol", "timestamp")
-    ])
-    
-    table_name = IndicatorModel.__tablename__
-    schema_name = IndicatorModel.__table__.schema
-    full_table_name = f"{schema_name}.{table_name}"
-
-    with SyncSessionLocal() as session:
-        connection = session.connection()
-        dbapi_conn = connection.connection
-        cursor = dbapi_conn.cursor()
-        
-        try:
-            for i, chunk in enumerate(chunks):
-                # Temp table per chunk (or reuse? reuse is better but need to truncate)
-                # Let's create a fresh temp table for simplicity and safety against previous failures
-                temp_table_name = f"temp_{table_name}_{uuid.uuid4().hex[:8]}".lower()
-                
-                csv_buffer = io.StringIO()
-                chunk.to_csv(
-                    csv_buffer,
-                    sep='\t',
-                    index=True,
-                    header=False,
-                    date_format='%Y-%m-%d %H:%M:%S',
-                    columns=columns,
-                    null_values='\\N'
-                )
-                csv_buffer.seek(0)
-                
-                # Create Temp Table
-                cursor.execute(f"""
-                    CREATE TEMP TABLE {temp_table_name} 
-                    (LIKE {full_table_name} INCLUDING DEFAULTS)
-                    ON COMMIT DROP;
-                """)
-                
-                # COPY to Temp
-                cursor.copy_from(
-                    csv_buffer, 
-                    temp_table_name, 
-                    sep='\t', 
-                    null='\\N',
-                    columns=columns
-                )
-                
-                # INSERT to Target
-                query = f"""
-                    INSERT INTO {full_table_name} ({cols_str})
-                    SELECT {cols_str}
-                    FROM {temp_table_name}
-                    ON CONFLICT (symbol, timestamp) 
-                    DO UPDATE SET {update_set};
-                """
-                cursor.execute(query)
-                saved_count += cursor.rowcount
-                
-                # Drop temp table explicitly to free resources immediately
-                cursor.execute(f"DROP TABLE IF EXISTS {temp_table_name}")
-                
-                # Commit every chunk to release locks? 
-                # Yes, committing releases locks, reducing deadlock chance.
-                session.commit()
-                
-            return saved_count
-            
-        except Exception as e:
-            session.rollback()
-            logger.error(f"[indicator.copy] Failed to bulk upsert (chunked): {e}")
-            raise
-        finally:
-            cursor.close()
 
 
 # =========================================================
