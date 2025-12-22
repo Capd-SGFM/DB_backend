@@ -12,4 +12,5 @@ ENV
 build/
 dist/
 *.egg
-*.whl
+*.whljobs_store.json
+jobs_store.json
