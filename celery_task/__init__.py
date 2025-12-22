@@ -14,6 +14,7 @@ celery_app = Celery(
         "celery_task.rest_maintenance_task",
         "celery_task.indicator_task",
         "celery_task.pipeline_task",
+        "celery_task.optimization_task",
     ],
 )
 

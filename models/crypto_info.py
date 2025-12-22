@@ -16,6 +16,9 @@ class CryptoInfo(Base):
 
     # 2. 실제 API 페어 (예: 'BTCUSDT')
     pair: Mapped[str] = mapped_column(String(30), nullable=False, unique=True)
+    
+    # 3. 백테스팅 전용 여부
+    is_backtesting_only: Mapped[bool] = mapped_column(default=False)
 
     def __repr__(self) -> str:
         return f"CryptoInfo(symbol={self.symbol!r}, pair={self.pair!r})"

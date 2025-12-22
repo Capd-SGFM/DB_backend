@@ -38,9 +38,6 @@ class Ohlcv1m(_OhlcvBase):
     __tablename__ = "ohlcv_1m"
 
 
-class Ohlcv3m(_OhlcvBase):
-    __tablename__ = "ohlcv_3m"
-
 
 class Ohlcv5m(_OhlcvBase):
     __tablename__ = "ohlcv_5m"
@@ -48,10 +45,6 @@ class Ohlcv5m(_OhlcvBase):
 
 class Ohlcv15m(_OhlcvBase):
     __tablename__ = "ohlcv_15m"
-
-
-class Ohlcv30m(_OhlcvBase):
-    __tablename__ = "ohlcv_30m"
 
 
 class Ohlcv1h(_OhlcvBase):
@@ -65,10 +58,3 @@ class Ohlcv4h(_OhlcvBase):
 class Ohlcv1d(_OhlcvBase):
     __tablename__ = "ohlcv_1d"
 
-
-class Ohlcv1w(_OhlcvBase):
-    __tablename__ = "ohlcv_1w"
-
-
-class Ohlcv1M(_OhlcvBase):
-    __tablename__ = "ohlcv_1M"

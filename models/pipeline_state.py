@@ -25,6 +25,8 @@ class PipelineComponent(IntEnum):
     BACKFILL = 3
     REST_MAINTENANCE = 4
     INDICATOR = 5
+    BACKTESTING = 6
+    VIP_BACKTESTING = 7
 
 
 class PipelineState(Base):
@@ -55,7 +57,13 @@ class PipelineState(Base):
 PIPELINE_STATE_PK = PipelineComponent.PIPELINE.value
 
 
-def _get_state(component: PipelineComponent) -> PipelineState | None:
+def _get_state(component: PipelineComponent | str) -> PipelineState | None:
+    # Handle string component names (e.g., "VIP_BACKTESTING")
+    if isinstance(component, str):
+        try:
+            component = PipelineComponent[component]
+        except KeyError:
+            return None
     with SyncSessionLocal() as session:
         return session.get(PipelineState, int(component))
 
@@ -125,8 +133,11 @@ def set_pipeline_active(active: bool) -> None:
         for comp in (
             PipelineComponent.WEBSOCKET,
             PipelineComponent.BACKFILL,
+            PipelineComponent.BACKFILL,
             PipelineComponent.REST_MAINTENANCE,
             PipelineComponent.INDICATOR,
+            PipelineComponent.BACKTESTING,
+            PipelineComponent.VIP_BACKTESTING,
         ):
             set_component_error(comp, None)  # last_error = NULL
 
@@ -157,6 +168,8 @@ def get_all_pipeline_states() -> dict[str, dict]:
             PipelineComponent.BACKFILL: "backfill",
             PipelineComponent.REST_MAINTENANCE: "rest_maintenance",
             PipelineComponent.INDICATOR: "indicator",
+            PipelineComponent.BACKTESTING: "backtesting",
+            PipelineComponent.VIP_BACKTESTING: "vip_backtesting",
         }[comp]
         result[key] = {
             "id": comp.value,

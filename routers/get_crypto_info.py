@@ -13,7 +13,8 @@ from models import CryptoInfo, SymbolTradingRules
 router = APIRouter(prefix="/get_symbol_info", tags=["get_symbol_info"])
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-CSV_PATH = BASE_DIR / "initial_settings" / "symbol_data" / "symbols.csv"
+CSV_PATH = BASE_DIR / "initial_settings" / "symbol_data" / "live_trading.csv"
+BACKTESTING_CSV_PATH = BASE_DIR / "initial_settings" / "symbol_data" / "only_backtesting.csv"
 
 BINANCE_FAPI_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 
@@ -58,24 +59,19 @@ def parse_filters(filters: List[Dict[str, Any]]) -> Dict[str, Any]:
     return parsed
 
 
-@router.post("/register_symbols")
-async def register_symbols(db: AsyncSession = Depends(get_async_db)):
+async def _process_symbols(db: AsyncSession, csv_path: Path, is_backtesting_only: bool):
     """
-    1. 서버의 'symbols.csv' 파일을 읽습니다.
-    2. 이 목록을 기준으로 Binance API를 호출하여 상세 정보를 가져옵니다.
-    3. API 정보를 기반으로 DB에 'UPSERT' (INSERT or UPDATE)를 실행합니다.
-       - 'symbol'이 없으면: 완전한 새 행(pair, precision 등 포함)을 INSERT.
-       - 'symbol'이 있으면: 기존 행의 모든 정보를 최신 API 값으로 UPDATE.
+    공통 심볼 등록 로직 처리
     """
     try:
         # 1. CSV에서 기준 심볼 로드
-        logger.info(f"CSV 경로 확인: {CSV_PATH}")
-        if not CSV_PATH.exists():
-            msg = f"CSV 파일이 없습니다: {CSV_PATH}"
+        logger.info(f"CSV 경로 확인: {csv_path}")
+        if not csv_path.exists():
+            msg = f"CSV 파일이 없습니다: {csv_path}"
             logger.error(msg)
             raise HTTPException(status_code=404, detail=msg)
 
-        df = pd.read_csv(CSV_PATH)
+        df = pd.read_csv(csv_path)
         if "symbol" not in df.columns:
             msg = "CSV에 'symbol' 컬럼이 없습니다."
             logger.error(msg)
@@ -103,7 +99,11 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
         logger.info(f"Binance API 호출: {BINANCE_FAPI_URL}")
         async with httpx.AsyncClient() as client:
             try:
-                response = await client.get(BINANCE_FAPI_URL, timeout=10.0)
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                    "Accept": "application/json"
+                }
+                response = await client.get(BINANCE_FAPI_URL, headers=headers, timeout=10.0)
                 response.raise_for_status()
             except httpx.RequestError as e:
                 msg = f"Binance API 요청 실패: {e}"
@@ -144,6 +144,7 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
             row_info = {
                 "symbol": base_asset,
                 "pair": item.get("symbol"),
+                "is_backtesting_only": is_backtesting_only,
             }
             crypto_info_upsert.append(row_info)
 
@@ -169,7 +170,6 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
         )
 
         # 4. UPSERT 실행 (1): metadata.crypto_info
-        # 먼저 부모 테이블인 crypto_info를 업데이트해야 함
         stmt_info = insert(CryptoInfo).values(crypto_info_upsert)
         update_cols_info = {
             key: getattr(stmt_info.excluded, key)
@@ -201,7 +201,7 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
         # result.rowcount는 UPSERT로 인해 영향을 받은 총 행의 수를 반환
         upserted_count = result.rowcount
 
-        msg = f"심볼 정보 {upserted_count}개 UPSERT 완료 (신규 삽입 또는 갱신됨)."
+        msg = f"심볼 정보 {upserted_count}개 UPSERT 완료 (백테스팅 전용: {is_backtesting_only})."
         logger.success(msg)
         return {
             "message": msg,
@@ -217,3 +217,19 @@ async def register_symbols(db: AsyncSession = Depends(get_async_db)):
         msg = f"심볼 등록/업데이트 중 오류 발생: {e}"
         logger.exception(msg)
         raise HTTPException(status_code=500, detail=msg)
+
+
+@router.post("/register_symbols")
+async def register_symbols(db: AsyncSession = Depends(get_async_db)):
+    """
+    일반 종목 등록 (Live Trading 용 - 'live_trading.csv')
+    """
+    return await _process_symbols(db, CSV_PATH, is_backtesting_only=False)
+
+
+@router.post("/register_backtesting_symbols")
+async def register_backtesting_symbols(db: AsyncSession = Depends(get_async_db)):
+    """
+    백테스팅 전용 종목 등록
+    """
+    return await _process_symbols(db, BACKTESTING_CSV_PATH, is_backtesting_only=True)

@@ -70,56 +70,7 @@ async def verify_token(
     return td
 
 
-# ===== 입력 모델 =====
-class ProfileUpdateIn(BaseModel):
-    username: constr(min_length=1, max_length=12)
-    email_opt_in: bool = False
 
-
-# ===== 로그인 상태 확인 =====
-@router.get("/me")
-async def auth_me(token: TokenData = Depends(verify_token)):
-    return {
-        "email": token.sub,
-        "google_id": token.id,
-        "name": token.name,
-        "exp": token.exp,
-    }
-
-
-# ===== 회원가입 완료/프로필 업데이트  =====
-@router.patch("/me/profile")
-async def update_my_profile(
-    body: ProfileUpdateIn,
-    token: TokenData = Depends(verify_token),  # sub=email, id=google_id
-    db: AsyncSession = Depends(get_async_db),
-):
-    username = body.username.strip()[:12]
-    try:
-        await db.execute(
-            text(
-                """
-INSERT INTO users.accounts (google_id, username, email, email_opt_in)
-VALUES (:google_id, :username, :email, :email_opt_in)
-ON CONFLICT (google_id) DO UPDATE
-SET username     = EXCLUDED.username,
-    email        = EXCLUDED.email,       -- 동일 이메일 호출 전제
-    email_opt_in = EXCLUDED.email_opt_in,
-    updated_at   = NOW()
-"""
-            ),
-            {
-                "google_id": token.id,
-                "username": username,
-                "email": token.sub,
-                "email_opt_in": bool(body.email_opt_in),
-            },
-        )
-        await db.commit()
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(409, f"profile upsert failed: {e}")
-    return {"ok": True}
 
 
 # ===== 로그인 상태 확인 =====

@@ -1,0 +1,357 @@
+[2025-12-20 04:28:24.538739] Start callback with code=testcode...
+[2025-12-20 04:28:24.828116] Requesting token...
+[2025-12-20 04:28:25.056842] Token response status: 400
+[2025-12-20 04:28:25.057499] Token missing: {'error': 'invalid_grant', 'error_description': 'Malformed auth code.'}
+[2025-12-20 04:28:25.060344] EXCEPTION: Traceback (most recent call last):
+  File "/app/auth/auth_google.py", line 55, in google_callback
+    raise HTTPException(400, f"google token missing: {tj}")
+fastapi.exceptions.HTTPException: 400: google token missing: {'error': 'invalid_grant', 'error_description': 'Malformed auth code.'}
+
+[2025-12-20 04:31:10.615555] Start callback with code=4/0ATX87lO...
+[2025-12-20 04:31:10.643805] Requesting token...
+[2025-12-20 04:31:10.792669] Token response status: 200
+[2025-12-20 04:31:10.793007] Requesting user info...
+[2025-12-20 04:31:10.944669] User info received: utaehuncoding@gmail.com
+[2025-12-20 04:31:10.945960] Checking DB...
+[2025-12-20 04:31:11.223788] User exists, updating login time
+[2025-12-20 05:02:54.153156] Start callback with code=4/0ATX87lM...
+[2025-12-20 05:02:54.183323] Requesting token...
+[2025-12-20 05:02:54.332048] Token response status: 200
+[2025-12-20 05:02:54.332329] Requesting user info...
+[2025-12-20 05:02:54.509889] User info received: utaehuncoding@gmail.com
+[2025-12-20 05:02:54.511065] Checking DB...
+[2025-12-20 05:02:54.520378] User exists, updating login time
+[2025-12-20 12:00:30.566332] Start callback with code=4/0ATX87lM...
+[2025-12-20 12:00:30.641410] Requesting token...
+[2025-12-20 12:00:30.811024] Token response status: 200
+[2025-12-20 12:00:30.811281] Requesting user info...
+[2025-12-20 12:00:30.909597] User info received: utaehuncoding@gmail.com
+[2025-12-20 12:00:30.910829] Checking DB...
+[2025-12-20 12:00:31.059788] User exists, updating login time
+[2025-12-20 12:31:15.390482] Start callback with code=4/0ATX87lO...
+[2025-12-20 12:31:15.425718] Requesting token...
+[2025-12-20 12:31:15.578806] Token response status: 200
+[2025-12-20 12:31:15.579085] Requesting user info...
+[2025-12-20 12:31:15.671597] User info received: utaehuncoding@gmail.com
+[2025-12-20 12:31:15.672619] Checking DB...
+[2025-12-20 12:31:15.681086] User exists, updating login time
+[2025-12-20 16:09:59.014021] Start callback with code=4/0ATX87lO...
+[2025-12-20 16:09:59.039497] Requesting token...
+[2025-12-20 16:09:59.205177] Token response status: 200
+[2025-12-20 16:09:59.205551] Requesting user info...
+[2025-12-20 16:09:59.314388] User info received: utaehuncoding@gmail.com
+[2025-12-20 16:09:59.315510] Checking DB...
+[2025-12-20 16:09:59.324597] User exists, updating login time
+[2025-12-20 16:19:43.400062] Start callback with code=4/0ATX87lM...
+[2025-12-20 16:19:43.426492] Requesting token...
+[2025-12-20 16:19:43.577246] Token response status: 200
+[2025-12-20 16:19:43.577580] Requesting user info...
+[2025-12-20 16:19:43.687966] User info received: utaehuncoding@gmail.com
+[2025-12-20 16:19:43.688788] Checking DB...
+[2025-12-20 16:19:43.697098] User exists, updating login time
+[2025-12-20 17:49:05.248207] Start callback with code=4/0ATX87lP...
+[2025-12-20 17:49:05.276319] Requesting token...
+[2025-12-20 17:49:05.434198] Token response status: 200
+[2025-12-20 17:49:05.434512] Requesting user info...
+[2025-12-20 17:49:05.532697] User info received: utaehuncoding@gmail.com
+[2025-12-20 17:49:05.533725] Checking DB...
+[2025-12-20 17:49:05.544203] User exists, updating login time
+[2025-12-20 18:23:18.355180] Start callback with code=4/0ATX87lP...
+[2025-12-20 18:23:18.383027] Requesting token...
+[2025-12-20 18:23:18.558135] Token response status: 200
+[2025-12-20 18:23:18.558403] Requesting user info...
+[2025-12-20 18:23:18.736387] User info received: utaehuncoding@gmail.com
+[2025-12-20 18:23:18.737347] Checking DB...
+[2025-12-20 18:23:18.747549] User exists, updating login time
+[2025-12-20 19:23:58.639879] Start callback with code=4/0ATX87lM...
+[2025-12-20 19:23:58.695448] Requesting token...
+[2025-12-20 19:23:58.848255] Token response status: 200
+[2025-12-20 19:23:58.848527] Requesting user info...
+[2025-12-20 19:23:58.951372] User info received: utaehuncoding@gmail.com
+[2025-12-20 19:23:58.952321] Checking DB...
+[2025-12-20 19:23:58.961457] User exists, updating login time
+[2025-12-21 22:41:17.198950] Start callback with code=4/0ATX87lO...
+[2025-12-21 22:41:17.228931] Requesting token...
+[2025-12-21 22:41:17.414645] Token response status: 200
+[2025-12-21 22:41:17.415090] Requesting user info...
+[2025-12-21 22:41:17.590981] User info received: utaehuncoding@gmail.com
+[2025-12-21 22:41:17.592109] Checking DB...
+[2025-12-21 22:41:17.620139] EXCEPTION: Traceback (most recent call last):
+  File "/app/auth/auth_google.py", line 78, in google_callback
+    await db.execute(
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 201, in greenlet_spawn
+    result = context.throw(*sys.exc_info())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2239, in _execute_internal
+    conn = self._connection_for_bind(bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2108, in _connection_for_bind
+    return trans._connection_for_bind(engine, execution_options)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in _connection_for_bind
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py", line 137, in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 1187, in _connection_for_bind
+    conn = bind.connect()
+           ^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3285, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3309, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1345, in _checkout
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1342, in _checkout
+    fairy._connection_record.get_connection()
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 836, in get_connection
+    self.__connect()
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 630, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connection.py", line 2443, in connect
+    return await connect_utils._connect(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1249, in _connect
+    raise last_error or exceptions.TargetServerAttributeNotMatched(
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1218, in _connect
+    conn = await _connect_addr(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1054, in _connect_addr
+    return await __connect_addr(params, True, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1099, in __connect_addr
+    tr, pr = await connector
+             ^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 969, in _create_ssl_connection
+    tr, pr = await loop.create_connection(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "uvloop/loop.pyx", line 1982, in create_connection
+socket.gaierror: [Errno -3] Temporary failure in name resolution
+
+[2025-12-21 22:41:28.974587] Start callback with code=4/0ATX87lN...
+[2025-12-21 22:41:29.002342] Requesting token...
+[2025-12-21 22:41:29.224356] Token response status: 200
+[2025-12-21 22:41:29.224607] Requesting user info...
+[2025-12-21 22:41:29.374322] User info received: utaehuncoding@gmail.com
+[2025-12-21 22:41:29.375303] Checking DB...
+[2025-12-21 22:41:29.387768] EXCEPTION: Traceback (most recent call last):
+  File "/app/auth/auth_google.py", line 78, in google_callback
+    await db.execute(
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 201, in greenlet_spawn
+    result = context.throw(*sys.exc_info())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2239, in _execute_internal
+    conn = self._connection_for_bind(bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2108, in _connection_for_bind
+    return trans._connection_for_bind(engine, execution_options)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in _connection_for_bind
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/state_changes.py", line 137, in _go
+    ret_value = fn(self, *arg, **kw)
+                ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 1187, in _connection_for_bind
+    conn = bind.connect()
+           ^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3285, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3309, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 716, in checkout
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 714, in checkout
+    dbapi_connection = rec.get_connection()
+                       ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 836, in get_connection
+    self.__connect()
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 630, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connection.py", line 2443, in connect
+    return await connect_utils._connect(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1249, in _connect
+    raise last_error or exceptions.TargetServerAttributeNotMatched(
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1218, in _connect
+    conn = await _connect_addr(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1054, in _connect_addr
+    return await __connect_addr(params, True, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 1099, in __connect_addr
+    tr, pr = await connector
+             ^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/asyncpg/connect_utils.py", line 969, in _create_ssl_connection
+    tr, pr = await loop.create_connection(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "uvloop/loop.pyx", line 1982, in create_connection
+socket.gaierror: [Errno -3] Temporary failure in name resolution
+
+[2025-12-21 23:25:36.743314] Start callback with code=4/0ATX87lO...
+[2025-12-21 23:25:36.836505] Requesting token...
+[2025-12-21 23:25:37.011674] Token response status: 200
+[2025-12-21 23:25:37.012291] Requesting user info...
+[2025-12-21 23:25:37.172855] User info received: utaehuncoding@gmail.com
+[2025-12-21 23:25:37.174021] Checking DB...
+[2025-12-21 23:25:37.355189] User exists, updating login time
+[2025-12-22 00:37:07.471327] Start callback with code=4/0ATX87lP...
+[2025-12-22 00:37:07.554078] Requesting token...
+[2025-12-22 00:37:07.745993] Token response status: 200
+[2025-12-22 00:37:07.746401] Requesting user info...
+[2025-12-22 00:37:07.887744] User info received: utaehuncoding@gmail.com
+[2025-12-22 00:37:07.891845] Checking DB...
+[2025-12-22 00:37:08.053943] User exists, updating login time
+[2025-12-22 01:16:25.086871] Start callback with code=4/0ATX87lO...
+[2025-12-22 01:16:25.163575] Requesting token...
+[2025-12-22 01:16:25.328849] Token response status: 200
+[2025-12-22 01:16:25.329207] Requesting user info...
+[2025-12-22 01:16:25.422712] User info received: utaehuncoding@gmail.com
+[2025-12-22 01:16:25.423647] Checking DB...
+[2025-12-22 01:16:25.557530] User exists, updating login time
+[2025-12-22 01:48:07.681010] Start callback with code=4/0ATX87lO...
+[2025-12-22 01:48:07.757130] Requesting token...
+[2025-12-22 01:48:07.918500] Token response status: 200
+[2025-12-22 01:48:07.918760] Requesting user info...
+[2025-12-22 01:48:08.027157] User info received: utaehuncoding@gmail.com
+[2025-12-22 01:48:08.028164] Checking DB...
+[2025-12-22 01:48:08.165763] User exists, updating login time
+[2025-12-22 03:32:00.913687] Start callback with code=4/0ATX87lM...
+[2025-12-22 03:32:00.947806] Requesting token...
+[2025-12-22 03:32:01.195073] Token response status: 200
+[2025-12-22 03:32:01.195681] Requesting user info...
+[2025-12-22 03:32:01.293756] User info received: utaehuncoding@gmail.com
+[2025-12-22 03:32:01.295029] Checking DB...
+[2025-12-22 03:32:01.309123] User exists, updating login time
+[2025-12-22 05:22:58.429017] Start callback with code=4/0ATX87lM...
+[2025-12-22 05:22:58.507135] Requesting token...
+[2025-12-22 05:22:58.665288] Token response status: 200
+[2025-12-22 05:22:58.665568] Requesting user info...
+[2025-12-22 05:22:58.811611] User info received: utaehuncoding@gmail.com
+[2025-12-22 05:22:58.812590] Checking DB...
+[2025-12-22 05:22:58.986482] User exists, updating login time
+[2025-12-22 06:07:17.413631] Start callback with code=4/0ATX87lO...
+[2025-12-22 06:07:17.516086] Requesting token...
+[2025-12-22 06:07:17.662446] Token response status: 200
+[2025-12-22 06:07:17.662746] Requesting user info...
+[2025-12-22 06:07:17.773245] User info received: utaehuncoding@gmail.com
+[2025-12-22 06:07:17.774451] Checking DB...
+[2025-12-22 06:07:17.905475] User exists, updating login time
+[2025-12-22 07:40:34.023607] Start callback with code=4/0ATX87lP...
+[2025-12-22 07:40:34.119863] Requesting token...
+[2025-12-22 07:40:34.277032] Token response status: 200
+[2025-12-22 07:40:34.277364] Requesting user info...
+[2025-12-22 07:40:34.377028] User info received: utaehuncoding@gmail.com
+[2025-12-22 07:40:34.378030] Checking DB...
+[2025-12-22 07:40:34.555271] User exists, updating login time
+[2025-12-22 08:26:24.424160] Start callback with code=4/0ATX87lN...
+[2025-12-22 08:26:25.047352] Requesting token...
+[2025-12-22 08:26:25.198379] Token response status: 200
+[2025-12-22 08:26:25.198574] Requesting user info...
+[2025-12-22 08:26:25.310314] User info received: utaehuncoding@gmail.com
+[2025-12-22 08:26:25.311271] Checking DB...
+[2025-12-22 08:26:25.428498] User exists, updating login time
+[2025-12-22 09:39:54.640189] Start callback with code=4/0ATX87lP...
+[2025-12-22 09:39:54.719617] Requesting token...
+[2025-12-22 09:39:54.936565] Token response status: 200
+[2025-12-22 09:39:54.936877] Requesting user info...
+[2025-12-22 09:39:55.103843] User info received: utaehuncoding@gmail.com
+[2025-12-22 09:39:55.104954] Checking DB...
+[2025-12-22 09:39:55.245938] User exists, updating login time
+[2025-12-22 10:47:33.660126] Start callback with code=4/0ATX87lP...
+[2025-12-22 10:47:33.746346] Requesting token...
+[2025-12-22 10:47:33.927947] Token response status: 200
+[2025-12-22 10:47:33.928282] Requesting user info...
+[2025-12-22 10:47:34.045574] User info received: utaehuncoding@gmail.com
+[2025-12-22 10:47:34.046640] Checking DB...
+[2025-12-22 10:47:34.155159] User exists, updating login time
+[2025-12-22 13:54:23.987090] Start callback with code=4/0ATX87lP...
+[2025-12-22 13:54:24.062253] Requesting token...
+[2025-12-22 13:54:24.246403] Token response status: 200
+[2025-12-22 13:54:24.246934] Requesting user info...
+[2025-12-22 13:54:24.363244] User info received: utaehuncoding@gmail.com
+[2025-12-22 13:54:24.364444] Checking DB...
+[2025-12-22 13:54:24.501974] User exists, updating login time
+[2025-12-22 14:25:27.728706] Start callback with code=4/0ATX87lN...
+[2025-12-22 14:25:27.805335] Requesting token...
+[2025-12-22 14:25:27.960285] Token response status: 200
+[2025-12-22 14:25:27.960567] Requesting user info...
+[2025-12-22 14:25:28.056340] User info received: utaehuncoding@gmail.com
+[2025-12-22 14:25:28.057423] Checking DB...
+[2025-12-22 14:25:28.194249] User exists, updating login time

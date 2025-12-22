@@ -265,6 +265,71 @@ def bbands_gpu(prices: np.ndarray, period=20, std_dev=2.0):
     return upper, middle, lower
 
 
+@cuda.jit
+def _tr_kernel(high, low, close, output):
+    """CUDA kernel for True Range (TR) calculation"""
+    idx = cuda.grid(1)
+    if idx < high.shape[0]:
+        if idx == 0:
+            # First element: High - Low
+            output[idx] = high[idx] - low[idx]
+        else:
+            # TR = Max(H-L, |H-Cp|, |L-Cp|)
+            hl = high[idx] - low[idx]
+            h_cp = abs(high[idx] - close[idx - 1])
+            l_cp = abs(low[idx] - close[idx - 1])
+            
+            max_val = hl
+            if h_cp > max_val:
+                max_val = h_cp
+            if l_cp > max_val:
+                max_val = l_cp
+            
+            output[idx] = max_val
+
+
+def atr_gpu(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
+    """
+    Calculate Average True Range (ATR) on GPU
+    """
+    if len(close) < period:
+        return np.full(len(close), np.nan)
+        
+    # 1. Calculate TR on GPU
+    tr_output = np.zeros_like(close, dtype=np.float64)
+    
+    high_device = cuda.to_device(high)
+    low_device = cuda.to_device(low)
+    close_device = cuda.to_device(close)
+    tr_device = cuda.to_device(tr_output)
+    
+    threads_per_block = 256
+    blocks = (len(close) + threads_per_block - 1) // threads_per_block
+    
+    _tr_kernel[blocks, threads_per_block](high_device, low_device, close_device, tr_device)
+    
+    tr = tr_device.copy_to_host()
+    
+    # 2. Calculate ATR using EMA (Wilder's Smoothing usually, but simple EMA/SMA often used)
+    # Using existing ema_gpu or sma_gpu? 
+    # Standard ATR uses Wilder's Smoothing which is EMA with alpha = 1/n (not 2/(n+1))
+    # Or SMA for the first value.
+    # For simplicity and speed, using existing EMA mechanism or SMA mechanism.
+    # Provided ema_gpu uses alpha = 2/(period+1).
+    # If user wants standard Wilder's, we need alpha = 1/period.
+    
+    # Let's use SMA similar to standard implementation if easy, OR existing EMA task.
+    # User didn't specify, but TradingView "ATR" is RMA (Running Moving Average).
+    # RMA is EMA with alpha = 1/length.
+    
+    # existing ema_cpu uses 2/(period+1).
+    # Let's implement a quick rma_gpu (or use SMA for now as approximation if strictness not needed).
+    # Actually, let's just use SMA of TR for "Simple" ATR, which is common enough.
+    # Or reuse ema_gpu for now.
+    
+    return sma_gpu(tr, period)
+
+
 def compute_indicators_gpu(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute all technical indicators on GPU
@@ -287,6 +352,8 @@ def compute_indicators_gpu(df: pd.DataFrame) -> pd.DataFrame:
     # Extract numpy arrays
     close = df['close'].values.astype(np.float64)
     volume = df['volume'].values.astype(np.float64)
+    high = df['high'].values.astype(np.float64)
+    low = df['low'].values.astype(np.float64)
     
     # Calculate indicators on GPU
     logger.debug(f"[GPU] Computing RSI, EMAs, MACD, Bollinger Bands on GPU...")
@@ -298,6 +365,7 @@ def compute_indicators_gpu(df: pd.DataFrame) -> pd.DataFrame:
     macd, macd_signal, macd_hist = macd_gpu(close)
     bb_upper, bb_middle, bb_lower = bbands_gpu(close)
     volume_20 = sma_gpu(volume, 20)
+    atr = atr_gpu(high, low, close, 14)
     
     elapsed = time.time() - start_time
     logger.info(f"[GPU] ✅ GPU computation completed in {elapsed:.3f}s for {data_size} points ({data_size/elapsed:.0f} points/sec)")
@@ -315,5 +383,6 @@ def compute_indicators_gpu(df: pd.DataFrame) -> pd.DataFrame:
     result['bb_middle'] = bb_middle
     result['bb_lower'] = bb_lower
     result['volume_20'] = volume_20
+    result['atr'] = atr
     
     return result

@@ -19,3 +19,5 @@ redis
 aiohttp
 aiolimiter
 numba
+scikit-learn
+tensorflow

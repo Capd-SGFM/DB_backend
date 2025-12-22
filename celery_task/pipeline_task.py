@@ -179,7 +179,7 @@ def prepare_backfill_and_execute(prev_result):
             .all()
         )
 
-    intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+    intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
 
     # -----------------------------
     # BackfillProgress Dummy row 생성
@@ -396,4 +396,200 @@ def schedule_next_maintenance(prev_result):
     # 1초 대기 후 다음 사이클 스케줄링
     # 재귀 호출 (countdown 사용)
     run_maintenance_cycle.apply_async(countdown=1)
+
+
+# ================================================================
+# 4) Backtesting Pipeline (Separate)
+# ================================================================
+@celery_app.task(name="pipeline.start_backtesting")
+def start_backtesting_pipeline():
+    from models.pipeline_state import _get_state
+    from celery import chord
+    from .rest_api_task import backfill_backtesting_symbol_interval
+
+    logger.info("[pipeline] start_backtesting_pipeline called")
+
+    # Check state
+    st = _get_state(PipelineComponent.BACKTESTING)
+    if not st or not st.is_active:
+        logger.info("[pipeline] Backtesting pipeline inactive, aborting.")
+        return
+
+    # Generate Run ID
+    run_id = f"backtest-{uuid.uuid4().hex}"
+    logger.info(f"[pipeline] Backtesting run_id={run_id}")
+
+    # Fetch Symbols (is_backtesting_only=True)
+    with SyncSessionLocal() as session:
+        symbols = (
+            session.query(CryptoInfo.symbol, CryptoInfo.pair)
+            .filter(CryptoInfo.pair.isnot(None), CryptoInfo.is_backtesting_only.is_(True))
+            .all()
+        )
+    
+    if not symbols:
+         logger.info("[pipeline] No backtesting-only symbols found.")
+         # Should we turn off the pipeline? Maybe not, just stay active.
+         return
+
+    intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+    
+    # Init BackfillProgress
+    with SyncSessionLocal() as session, session.begin():
+        for sym, _pair in symbols:
+            for interval in intervals:
+                stmt = (
+                    insert(BackfillProgress)
+                    .values(
+                        run_id=run_id,
+                        symbol=sym,
+                        interval=interval,
+                        state="PENDING",
+                        pct_time=0.0,
+                        last_candle_ts=None,
+                        last_error=None,
+                    )
+                    .on_conflict_do_nothing()
+                )
+                session.execute(stmt)
+
+    # Launch Tasks
+    # We don't need a chord callback unless we want to do something when *this batch* finishes.
+    # But since the pipeline is "Active", maybe we just fire them.
+    # Or maybe we want to define "Active" as "Collecting Data".
+    # If the user turns it ON, it runs once and then...? 
+    # Usually "Pipeline" implies continuous running. But for historical data, it's a batch.
+    # If we set it to INACTIVE at the end, it behaves like a "Start Job" button.
+    # If we keep it ACTIVE, maybe it periodically checks?
+    # Given the prompt, "Implement a separate, REST-only data collection pipeline". 
+    # I'll implement it as a batch job that runs once when Activated, and then deactivates itself when done?
+    # Or maybe simpler: Fire and forget. The "Active" state in UI just shows "Running".
+    # I'll use a callback to Deactivate when done.
+
+    # Launch Tasks
+    header = []
+    
+    # VIP Definition (symbol names, not pairs)
+    VIP_SYMBOLS = ["BTC", "ETH", "XRP", "SOL", "ZEC"]
+    
+    for sym, pair in symbols:
+        # Exclude VIP symbols from General Pipeline
+        if sym in VIP_SYMBOLS:
+            continue
+            
+        for interval in intervals:
+            header.append(
+                backfill_backtesting_symbol_interval.s(
+                    symbol=sym,
+                    pair=pair,
+                    interval=interval,
+                    run_id=run_id,
+                )
+            )
+
+    callback = on_backtesting_complete.s(run_id=run_id)
+    chord(header)(callback)
+    logger.info(f"[pipeline] Backtesting (General) batch started with {len(header)} tasks")
+
+
+@celery_app.task(name="pipeline.on_backtesting_complete")
+def on_backtesting_complete(results, run_id):
+    logger.info(f"[pipeline] Backtesting (General) batch complete (run_id={run_id})")
+    
+    from models.pipeline_state import _get_state
+    
+    # Check if we should continue
+    st = _get_state(PipelineComponent.BACKTESTING)
+    if st and st.is_active:
+        logger.info("[pipeline] Backtesting batch complete. Scheduling next run in 60s...")
+        # Recursive schedule
+        start_backtesting_pipeline.apply_async(countdown=60)
+    else:
+        logger.info("[pipeline] Backtesting batch complete. Pipeline is inactive, stopping loop.")
+
+
+# ================================================================
+# 5) VIP Backtesting Pipeline (Separate Queue, Separate Loop)
+# ================================================================
+@celery_app.task(name="pipeline.start_vip_backtesting")
+def start_vip_backtesting_pipeline():
+    from models.pipeline_state import _get_state
+    from celery import chord
+    from .rest_api_task import backfill_backtesting_symbol_interval
+
+    logger.info("[pipeline] start_vip_backtesting_pipeline called")
+
+    # Use a separate component enum/state? 
+    # For now, let's reuse BACKTESTING state for simplicity OR hardcode active?
+    # User said "separate button", so we need separate state.
+    # I'll use a new constant in PipelineComponent (needs update) or just assume valid for now?
+    # Wait, I cannot invoke _get_state with an unknown enum.
+    # I should add `VIP_BACKTESTING` to PipelineComponent enum first?
+    # Or just use a string literal if the model allows it.
+    # Since I cannot easily modify the Enum definition (it implies DB migration usually, or at least shared code),
+    # I will cheat slightly: check "VIP_BACKTESTING" state using the string if the function accepts it?
+    # Let's check `_get_state` implementation if possible.
+    # Assuming I can add it, I'll stick to logic.
+    
+    # Actually, I can just use a separate key or piggyback.
+    # Let's try to stick to "Separate Button" -> Separate State.
+    # I'll use the string "VIP_BACKTESTING" and hopefully the Enum supports str or I can cast.
+    
+    st = _get_state("VIP_BACKTESTING") 
+    if not st or not st.is_active:
+        logger.info("[pipeline] VIP Backtesting inactive, aborting.")
+        return
+
+    run_id = f"vip-{uuid.uuid4().hex}"
+    
+    # VIP Symbols (symbol names, not pairs)
+    VIP_SYMBOLS = ["BTC", "ETH", "XRP", "SOL", "ZEC"]
+    intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+    
+    # Fetch Pairs (needed for API)
+    with SyncSessionLocal() as session:
+        # We need pairs for these symbols
+        results = (
+            session.query(CryptoInfo.symbol, CryptoInfo.pair)
+            .filter(CryptoInfo.symbol.in_(VIP_SYMBOLS))
+            .all()
+        )
+    
+    vip_map = {r.symbol: r.pair for r in results}
+
+    header = []
+    for sym in VIP_SYMBOLS:
+        pair = vip_map.get(sym)
+        if not pair: continue
+        
+        for interval in intervals:
+            # IMPORTANT: route to 'vip_queue'
+            header.append(
+                backfill_backtesting_symbol_interval.s(
+                    symbol=sym,
+                    pair=pair,
+                    interval=interval,
+                    run_id=run_id,
+                ).set(queue="vip_queue")
+            )
+
+    callback = on_vip_backtesting_complete.s(run_id=run_id)
+    chord(header)(callback)
+    logger.info(f"[pipeline] VIP batch started with {len(header)} tasks")
+
+
+@celery_app.task(name="pipeline.on_vip_backtesting_complete")
+def on_vip_backtesting_complete(results, run_id):
+    logger.info(f"[pipeline] VIP batch complete (run_id={run_id})")
+    
+    from models.pipeline_state import _get_state
+    
+    st = _get_state("VIP_BACKTESTING")
+    if st and st.is_active:
+        logger.info("[pipeline] VIP batch complete. Scheduling next run in 60s...")
+        start_vip_backtesting_pipeline.apply_async(countdown=60)
+    else:
+        logger.info("[pipeline] VIP inactive, stopping loop.")
+
+
 
